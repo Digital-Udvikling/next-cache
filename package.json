@@ -1,0 +1,77 @@
+{
+  "name": "@aortl/next-cache",
+  "version": "0.1.0",
+  "description": "Redis cache handlers and programmatic cache API for self-hosted Next.js 16",
+  "keywords": [
+    "cache",
+    "cache-handler",
+    "next",
+    "nextjs",
+    "redis",
+    "self-hosted",
+    "use-cache"
+  ],
+  "license": "MIT",
+  "author": "Brødrene A&O Johansen A/S (https://ao.dk)",
+  "contributors": [
+    "Nickolaj Jepsen <nij@ao.dk>"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "test": "vitest run",
+    "test:unit": "vitest run --project=unit",
+    "test:integration": "vitest run --project=integration",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm -F @aortl/next-cache build && pnpm -F example-basic build && pnpm -F @aortl/next-cache-e2e test",
+    "test:all": "pnpm -F @aortl/next-cache test && pnpm test:e2e",
+    "example:dev": "pnpm -F @aortl/next-cache build && pnpm -F example-basic dev",
+    "example:start": "pnpm -F @aortl/next-cache build && pnpm -F example-basic build && pnpm -F example-basic start"
+  },
+  "devDependencies": {
+    "@testcontainers/redis": "^10.13.0",
+    "@types/ioredis-mock": "^8.2.5",
+    "@types/node": "^22.7.0",
+    "ioredis": "^5.4.1",
+    "ioredis-mock": "^8.9.0",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0",
+    "testcontainers": "^10.13.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

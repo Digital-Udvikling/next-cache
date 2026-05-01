@@ -1,0 +1,76 @@
+name: Release
+
+# Tag-triggered: push a `v0.1.0`-style tag (matching the version in
+# package.json) and this workflow builds, tests, and publishes
+# `@aortl/next-cache` to npm.
+#
+# Required setup:
+#   1. Create an npm automation token (https://www.npmjs.com/settings/<user>/tokens/granular-access-tokens)
+#      scoped to publish `@aortl/next-cache`.
+#   2. Add it as the `NPM_TOKEN` repository secret in GitHub.
+#   3. Bump `package.json` `version`, commit, then `git tag v<version> && git push --tags`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required if you later opt into npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG does not match package.json version v$PKG"
+            exit 1
+          fi
+          echo "Releasing v$PKG"
+
+      - name: Typecheck
+        run: pnpm -F @aortl/next-cache typecheck
+
+      - name: Unit tests
+        run: pnpm -F @aortl/next-cache test:unit
+
+      - name: Integration tests
+        run: pnpm -F @aortl/next-cache test:integration
+
+      - name: Build
+        run: pnpm -F @aortl/next-cache build
+
+      - name: Publish to npm
+        run: pnpm -F @aortl/next-cache publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+# To enable npm provenance (signed builds traceable to this workflow):
+#   1. Add a `repository` field to package.json pointing at this repo, e.g.
+#        "repository": { "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }
+#   2. Append `--provenance` to the publish step.
+#   The `id-token: write` permission above already allows the OIDC handshake.
