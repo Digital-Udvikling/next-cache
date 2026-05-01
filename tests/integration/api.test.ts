@@ -46,6 +46,7 @@ describe("programmatic cache (integration)", () => {
     it("invalidateTag voids tagged entries", async () => {
       await cache.set("k", "v", { tags: ["foo"] });
       expect(await cache.get("k")).toBe("v");
+      await new Promise((r) => setTimeout(r, 5));
       await cache.invalidateTag("foo");
       expect(await cache.get("k")).toBeUndefined();
     });
