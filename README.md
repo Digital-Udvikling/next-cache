@@ -182,12 +182,12 @@ The workflow runs typecheck → unit + integration tests → build → `npm publ
 
 Trusted publisher configuration on npm (one-time, on the package's Settings → Trusted Publishers page):
 
-| Field             | Value                |
-| ----------------- | -------------------- |
-| Repository owner  | `Digital-Udvikling`  |
-| Repository        | `next-cache`         |
-| Workflow filename | `release.yml`        |
-| Environment       | _(empty)_            |
+| Field             | Value               |
+| ----------------- | ------------------- |
+| Repository owner  | `Digital-Udvikling` |
+| Repository        | `next-cache`        |
+| Workflow filename | `release.yml`       |
+| Environment       | _(empty)_           |
 
 ## License
 

@@ -9,3 +9,5 @@ coverage
 .env.*
 !.env.example
 .vitest-cache
+e2e/test-results
+playwright-report

@@ -11,6 +11,8 @@
     "self-hosted",
     "use-cache"
   ],
+  "homepage": "https://github.com/Digital-Udvikling/next-cache#readme",
+  "bugs": "https://github.com/Digital-Udvikling/next-cache/issues",
   "license": "MIT",
   "author": "Brødrene A&O Johansen A/S (https://ao.dk)",
   "contributors": [
@@ -20,8 +22,6 @@
     "type": "git",
     "url": "git+https://github.com/Digital-Udvikling/next-cache.git"
   },
-  "homepage": "https://github.com/Digital-Udvikling/next-cache#readme",
-  "bugs": "https://github.com/Digital-Udvikling/next-cache/issues",
   "files": [
     "dist",
     "README.md",
