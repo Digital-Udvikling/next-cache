@@ -168,15 +168,26 @@ Next.js 16's `revalidateTag(tag, profile)` passes the cacheLife profile's `expir
 
 ## Releasing
 
-A GitHub Actions workflow at [`.github/workflows/release.yml`](./.github/workflows/release.yml) publishes `@aortl/next-cache` to npm when you push a `v<version>` tag. One-time setup: add an npm automation token as the `NPM_TOKEN` repository secret. To cut a release:
+A GitHub Actions workflow at [`.github/workflows/release.yml`](./.github/workflows/release.yml) publishes `@aortl/next-cache` to npm when you push a `v<version>` tag. Auth uses **npm Trusted Publishing via OIDC** — there's no long-lived `NPM_TOKEN` secret, and every published version carries a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) linking back to the exact GitHub Actions run.
+
+To cut a release, use `pnpm version` to bump `package.json`, commit, and tag in one step, then push branch + tag together:
 
 ```bash
-# bump version in package.json, commit, then:
-git tag v0.1.0
-git push --tags
+pnpm version patch          # 0.1.0 → 0.1.1: bumps package.json, commits, tags v0.1.1
+                            # use `minor` or `major` for non-patch bumps
+git push --follow-tags      # push HEAD + the new tag — triggers the workflow
 ```
 
-The workflow runs typecheck → unit + integration tests → build → `pnpm publish --access public`. It refuses to publish if the tag's version doesn't match `package.json`. See the workflow file for notes on enabling npm provenance.
+The workflow runs typecheck → unit + integration tests → build → `npm publish --access public --provenance`. It refuses to publish if the tag's version doesn't match `package.json`.
+
+Trusted publisher configuration on npm (one-time, on the package's Settings → Trusted Publishers page):
+
+| Field             | Value                |
+| ----------------- | -------------------- |
+| Repository owner  | `Digital-Udvikling`  |
+| Repository        | `next-cache`         |
+| Workflow filename | `release.yml`        |
+| Environment       | _(empty)_            |
 
 ## License
 

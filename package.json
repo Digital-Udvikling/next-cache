@@ -16,6 +16,12 @@
   "contributors": [
     "Nickolaj Jepsen <nij@ao.dk>"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Digital-Udvikling/next-cache.git"
+  },
+  "homepage": "https://github.com/Digital-Udvikling/next-cache#readme",
+  "bugs": "https://github.com/Digital-Udvikling/next-cache/issues",
   "files": [
     "dist",
     "README.md",

@@ -4,11 +4,16 @@ name: Release
 # package.json) and this workflow builds, tests, and publishes
 # `@aortl/next-cache` to npm.
 #
-# Required setup:
-#   1. Create an npm automation token (https://www.npmjs.com/settings/<user>/tokens/granular-access-tokens)
-#      scoped to publish `@aortl/next-cache`.
-#   2. Add it as the `NPM_TOKEN` repository secret in GitHub.
-#   3. Bump `package.json` `version`, commit, then `git tag v<version> && git push --tags`.
+# Auth: OIDC trusted publishing — no NPM_TOKEN secret required.
+# Configure the trusted publisher on the npm package page:
+#   Settings → Trusted Publishers → Add → GitHub Actions
+#     Repository owner:  Digital-Udvikling
+#     Repository:        next-cache
+#     Workflow filename: release.yml
+#     Environment:       (leave empty unless you set up a GitHub Environment)
+#
+# Cutting a release:
+#   bump `package.json` version → commit → `git tag v<version> && git push --tags`
 
 on:
   push:
@@ -18,7 +23,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required if you later opt into npm provenance
+  id-token: write # OIDC handshake with npm
+  attestations: write # build provenance attestations published alongside the package
 
 jobs:
   release:
@@ -64,13 +70,9 @@ jobs:
       - name: Build
         run: pnpm -F @aortl/next-cache build
 
+      # Use `npm publish` rather than `pnpm publish` because npm CLI 11.5+ has
+      # first-class support for OIDC trusted publishing and provenance, and the
+      # root package IS @aortl/next-cache, so a plain `npm publish` from the
+      # repo root publishes exactly the right package.
       - name: Publish to npm
-        run: pnpm -F @aortl/next-cache publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-# To enable npm provenance (signed builds traceable to this workflow):
-#   1. Add a `repository` field to package.json pointing at this repo, e.g.
-#        "repository": { "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }
-#   2. Append `--provenance` to the publish step.
-#   The `id-token: write` permission above already allows the OIDC handshake.
+        run: npm publish --access public --provenance
