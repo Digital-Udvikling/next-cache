@@ -1,6 +1,6 @@
 {
   "name": "@aortl/next-cache",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Redis cache handlers and programmatic cache API for self-hosted Next.js 16",
   "keywords": [
     "cache",
