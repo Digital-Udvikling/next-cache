@@ -4,8 +4,9 @@ Redis cache handlers and a programmatic cache API for self-hosted Next.js 16.
 
 - **`default` handler** for `'use cache'` — keeps cached output in-memory for fast reads, but coordinates tag invalidation through Redis (pub/sub) so `revalidateTag()` propagates across instances.
 - **`remote` handler** for `'use cache: remote'` — stores entries in Redis, shared across every instance of your app.
+- **`incremental` handler** for Next's ISR/page cache (`cacheHandler`, singular) — extends the built-in FileSystemCache so saved static pages are invalidated on _every_ instance when `revalidateTag()` runs on any of them.
 - **Programmatic cache** (`createCache`) — `get` / `set` / `delete` / `getOrSet` / `invalidateTag` over Redis, sharing the same tag manifest as the cache handlers.
-- TypeScript, ESM + CJS, peer-deps `ioredis` (≥ 5).
+- TypeScript, ESM + CJS, peer-deps `ioredis` (≥ 5) and, for the incremental handler only, `next` (≥ 16.1).
 
 ## Installation
 
@@ -29,6 +30,8 @@ const config: NextConfig = {
     default: require.resolve("./cache-handlers/default.js"),
     remote: require.resolve("./cache-handlers/remote.js"),
   },
+  // Optional: coordinate the ISR/page cache too (see "The incremental handler").
+  cacheHandler: require.resolve("./cache-handlers/incremental.js"),
 };
 
 export default config;
@@ -44,6 +47,11 @@ module.exports = require("@aortl/next-cache").createDefaultHandler();
 module.exports = require("@aortl/next-cache").createRemoteHandler();
 ```
 
+```js
+// cache-handlers/incremental.js
+module.exports = require("@aortl/next-cache").createIncrementalHandler();
+```
+
 Set `REDIS_URL` in your environment and you're done. With no options, the factories pull `REDIS_URL` (defaulting to `redis://localhost:6379`) and use sensible defaults.
 
 ### How it works
@@ -51,6 +59,20 @@ Set `REDIS_URL` in your environment and you're done. With no options, the factor
 - **`'use cache'`** entries live in each instance's in-memory LRU. Reads stay local — no Redis round-trip for cache hits. When `revalidateTag()` runs on any instance, that instance writes the new tag timestamp to a Redis hash and publishes on a channel; every other instance picks the change up over pub/sub and discards the affected entries on their next read.
 - **`'use cache: remote'`** entries are JSON-encoded and stored in Redis with a TTL matching `expire`. Any instance can serve the cache. Tag invalidation uses the same Redis-backed manifest.
 - The programmatic `createCache` API uses the same manifest, so `cache.invalidateTag("foo")` also flushes any `'use cache'` / `'use cache: remote'` entries tagged `foo`.
+- The **incremental** handler keeps page storage on the local filesystem but checks every read against the shared manifest, and publishes its own `revalidateTag()` calls to it.
+
+### The incremental handler
+
+Next's `cacheHandler` (singular) is a separate system from `cacheHandlers` (plural): it stores finished responses — the saved fully-static pages (HTML + RSC payload) that Cache Components produce after the first visit to a URL not listed in `generateStaticParams`, plus the fetch cache. The built-in FileSystemCache tracks tag invalidations in an in-process map with no propagation, so behind a load balancer `revalidateTag()` only drops the saved pages on the instance that executed it; every other instance keeps serving its saved copy until the route's `revalidate` window elapses — even when the `'use cache'` data underneath was correctly invalidated everywhere (a saved-page hit skips rendering entirely, so the invalidated data is never consulted).
+
+`createIncrementalHandler()` returns a class extending FileSystemCache. Storage stays on each instance's filesystem (build output remains readable, no page payloads in Redis), but reads are additionally checked against the shared tag manifest: a tag expired after a page was saved turns the read into a miss, forcing a re-render that picks up fresh data.
+
+Caveats:
+
+- It extends `next/dist/server/lib/incremental-cache/file-system-cache`, an **internal** Next API — pin your Next version and re-verify on upgrades. The factory fails loudly if the module shape changes.
+- `next` must be installed alongside this package (declared as an optional peer dependency).
+- Only invalidation is coordinated. Each instance still warms its saved pages independently, and a Redis outage degrades to the built-in per-instance behavior rather than failing requests.
+- During `next build` the unmodified FileSystemCache is returned (no Redis in the build environment needed), following `disableDuringBuild`.
 
 ## Programmatic cache API
 
