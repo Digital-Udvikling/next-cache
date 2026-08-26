@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CacheEntry, CacheHandler } from "../../src/types.js";
 import { buildDefaultHandler } from "../../src/handlers/default.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
@@ -59,6 +59,28 @@ describe("default handler", () => {
     const old = Date.now() - 120_000;
     await handler.set("k", Promise.resolve(entry({ timestamp: old, revalidate: 60 })));
     expect(await handler.get("k", [])).toBeUndefined();
+  });
+
+  it("does not store dynamic entries (expire <= 0)", async () => {
+    // revalidate > expire is unrealistic, but distinguishes "skipped on set"
+    // from "dropped on get by the revalidate cutoff".
+    await handler.set("k", Promise.resolve(entry({ expire: 0, revalidate: 60 })));
+    expect(await handler.get("k", [])).toBeUndefined();
+  });
+
+  it("in dev, retains entries past revalidate (minimum retention)", async () => {
+    vi.stubEnv("__NEXT_DEV_SERVER", "1");
+    try {
+      const old = Date.now() - 120_000;
+      await handler.set(
+        "k",
+        Promise.resolve(entry({ timestamp: old, revalidate: 60, expire: 3600 })),
+      );
+      const got = await handler.get("k", []);
+      expect(got).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("returns undefined after a tag is invalidated for an entry that predates it", async () => {

@@ -57,7 +57,7 @@ Set `REDIS_URL` in your environment and you're done. With no options, the factor
 ### How it works
 
 - **`'use cache'`** entries live in each instance's in-memory LRU. Reads stay local — no Redis round-trip for cache hits. When `revalidateTag()` runs on any instance, that instance writes the new tag timestamp to a Redis hash and publishes on a channel; every other instance picks the change up over pub/sub and discards the affected entries on their next read.
-- **`'use cache: remote'`** entries are JSON-encoded and stored in Redis with a TTL matching `expire`. Any instance can serve the cache. Tag invalidation uses the same Redis-backed manifest.
+- **`'use cache: remote'`** entries are JSON-encoded and stored in Redis with a TTL matching `expire`. Any instance can serve the cache. Entries past their `revalidate` time are still served (stale-while-revalidate) — Next.js refreshes them in the background — and are only dropped once past `expire`. Dynamic entries (`expire: 0`) are never written. Tag invalidation uses the same Redis-backed manifest.
 - The programmatic `createCache` API uses the same manifest, so `cache.invalidateTag("foo")` also flushes any `'use cache'` / `'use cache: remote'` entries tagged `foo`.
 - The **incremental** handler keeps page storage on the local filesystem but checks every read against the shared manifest, and publishes its own `revalidateTag()` calls to it.
 

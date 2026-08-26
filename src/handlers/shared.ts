@@ -1,10 +1,26 @@
 import type { CacheEntry, CacheHandler } from "../types.js";
 import type { Runtime } from "../runtime.js";
+import { isDevServer } from "../config.js";
 
 export interface Storage {
   get(cacheKey: string): Promise<CacheEntry | undefined>;
   set(cacheKey: string, entry: CacheEntry): Promise<void>;
 }
+
+// Mirrors Next.js's MIN_PRERENDERABLE_EXPIRE: in dev, the built-in handlers
+// retain entries for at least this long so short-`expire` entries survive
+// reloads. We match it so the dev tiered front (which fronts custom handlers)
+// doesn't evict entries we've dropped that the built-in would have kept.
+export const MIN_DEV_RETENTION_SECONDS = 300;
+
+/**
+ * When a stored entry stops being served. "revalidate" mirrors Next.js's
+ * built-in in-memory handler (a stale entry likely gets evicted before a
+ * background refresh pays off). "expire" serves stale entries until their hard
+ * expiry, letting the 'use cache' wrapper revalidate in the background instead
+ * of blocking — the right trade-off for persistent shared storage.
+ */
+export type DropAfter = "revalidate" | "expire";
 
 export function noopHandler(): CacheHandler {
   return {
@@ -16,7 +32,12 @@ export function noopHandler(): CacheHandler {
   };
 }
 
-export function buildHandler(runtime: Runtime, storage: Storage, label: string): CacheHandler {
+export function buildHandler(
+  runtime: Runtime,
+  storage: Storage,
+  label: string,
+  dropAfter: DropAfter,
+): CacheHandler {
   const { coordinator, debug } = runtime;
   const pendingSets = new Map<string, Promise<void>>();
   let initPromise: Promise<void> | undefined;
@@ -54,7 +75,14 @@ export function buildHandler(runtime: Runtime, storage: Storage, label: string):
       }
 
       const now = Date.now();
-      if (now > entry.timestamp + entry.revalidate * 1000) {
+      // In dev, mirror the built-in handlers' minimum retention (see
+      // MIN_DEV_RETENTION_SECONDS) so reloads keep hitting the cache.
+      const maxAgeSeconds = isDevServer()
+        ? Math.max(entry.expire, MIN_DEV_RETENTION_SECONDS)
+        : dropAfter === "expire"
+          ? entry.expire
+          : entry.revalidate;
+      if (now > entry.timestamp + maxAgeSeconds * 1000) {
         debug?.(label, "expired", cacheKey);
         return undefined;
       }
@@ -85,6 +113,14 @@ export function buildHandler(runtime: Runtime, storage: Storage, label: string):
       try {
         await ensureInit();
         const entry = await pendingEntry;
+        // An `expire: 0` entry is dynamic: the 'use cache' wrapper regenerates
+        // it on every read, so storing it is a wasted write (and, for Redis,
+        // a key with no TTL that lingers forever). Dev keeps it so the minimum
+        // retention in `get` can serve it across reloads.
+        if (!isDevServer() && entry.expire <= 0) {
+          debug?.(label, "skipped dynamic entry", cacheKey);
+          return;
+        }
         await storage.set(cacheKey, entry);
         debug?.(label, "set", cacheKey);
       } catch (err) {

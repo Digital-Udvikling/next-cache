@@ -65,6 +65,32 @@ describe("remote handler", () => {
     expect(out.equals(body)).toBe(true);
   });
 
+  it("serves entries past revalidate but before expire (stale-while-revalidate)", async () => {
+    await handler.set(
+      "k",
+      Promise.resolve(entry({ timestamp: Date.now() - 120_000, revalidate: 60, expire: 3600 })),
+    );
+    const got = await handler.get("k", []);
+    expect(got).toBeDefined();
+    if (!got) return;
+    expect(got.revalidate).toBe(60);
+    expect((await collectStream(got.value)).toString()).toBe("payload");
+  });
+
+  it("returns undefined once past expire", async () => {
+    await handler.set(
+      "k",
+      Promise.resolve(entry({ timestamp: Date.now() - 7_200_000, revalidate: 60, expire: 3600 })),
+    );
+    expect(await handler.get("k", [])).toBeUndefined();
+  });
+
+  it("does not store dynamic entries (expire <= 0)", async () => {
+    await handler.set("k", Promise.resolve(entry({ expire: 0, revalidate: 60 })));
+    expect(await handler.get("k", [])).toBeUndefined();
+    expect(await runtime.client.get(runtime.keys.entry("k"))).toBeNull();
+  });
+
   it("getExpiration returns updated timestamps", async () => {
     expect(await handler.getExpiration(["x"])).toBe(0);
     await handler.updateTags(["x"]);

@@ -39,7 +39,7 @@ export function buildDefaultHandler(runtime: Runtime): CacheHandler {
   if (runtime.config.defaultMaxItems === 0 || runtime.config.defaultMaxBytes === 0) {
     return noopHandler();
   }
-  return buildHandler(runtime, createMemoryStorage(runtime), "default");
+  return buildHandler(runtime, createMemoryStorage(runtime), "default", "revalidate");
 }
 
 export function createDefaultHandler(options: NextCacheOptions = {}): CacheHandler {
