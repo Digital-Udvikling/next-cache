@@ -16,6 +16,10 @@ export interface CoordinatorOptions {
   debug?: (...args: unknown[]) => void;
 }
 
+/**
+ * Keeps the in-memory tag manifest in step with the shared Redis hash (pub/sub, else full
+ * re-read). Redis-touching methods throw while Redis is unreachable; nothing blocks on a reconnect.
+ */
 export class TagCoordinator {
   readonly manifest = new TagManifest();
   private readonly client: Redis;
@@ -23,6 +27,7 @@ export class TagCoordinator {
   private readonly pubsubEnabled: boolean;
   private readonly debug?: (...args: unknown[]) => void;
   private subscriber: Redis | undefined;
+  private initialized = false;
   private initPromise: Promise<void> | undefined;
   private closed = false;
 
@@ -33,9 +38,21 @@ export class TagCoordinator {
     this.debug = opts.debug;
   }
 
+  /**
+   * Connect, load the manifest and (when enabled) subscribe. Concurrent callers share one
+   * attempt; a failure is retried on the next call, never cached for the instance's lifetime.
+   */
   async init(): Promise<void> {
-    if (this.initPromise) return this.initPromise;
-    this.initPromise = this.doInit();
+    if (this.initialized) return;
+    if (!this.initPromise) {
+      this.initPromise = this.doInit()
+        .then(() => {
+          this.initialized = true;
+        })
+        .finally(() => {
+          this.initPromise = undefined;
+        });
+    }
     return this.initPromise;
   }
 
@@ -48,17 +65,20 @@ export class TagCoordinator {
   }
 
   private async startSubscriber(): Promise<void> {
-    this.subscriber = duplicateForPubsub(this.client);
-    this.subscriber.on("message", (_channel, raw) => {
-      this.handleMessage(raw);
-    });
-    this.subscriber.on("ready", () => {
-      this.fullSync().catch((err) => this.debug?.("re-sync failed", err));
-    });
-    this.subscriber.on("error", (err) => {
-      this.debug?.("subscriber error", err);
-    });
-    await this.subscriber.connect();
+    // Reused across init retries; ioredis re-subscribes after a reconnect and "ready" re-reads.
+    if (!this.subscriber) {
+      this.subscriber = duplicateForPubsub(this.client);
+      this.subscriber.on("message", (_channel, raw) => {
+        this.handleMessage(raw);
+      });
+      this.subscriber.on("ready", () => {
+        this.fullSync().catch((err) => this.debug?.("re-sync failed", err));
+      });
+      this.subscriber.on("error", (err) => {
+        this.debug?.("subscriber error", err);
+      });
+    }
+    await ensureConnected(this.subscriber);
     await this.subscriber.subscribe(this.keys.pubsubChannel);
   }
 
@@ -75,6 +95,7 @@ export class TagCoordinator {
 
   async refreshTags(): Promise<void> {
     if (this.closed) return;
+    // A subscriber that is down counts as disabled: the re-read covers what pub/sub missed.
     if (this.pubsubEnabled && this.subscriber?.status === "ready") {
       return;
     }
@@ -82,6 +103,7 @@ export class TagCoordinator {
   }
 
   private async fullSync(): Promise<void> {
+    await ensureConnected(this.client);
     const raw = await this.client.hgetall(this.keys.tagsHash());
     const next = new Map<string, TagManifestEntry>();
     for (const [tag, value] of Object.entries(raw)) {

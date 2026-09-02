@@ -68,11 +68,10 @@ export function buildIncrementalHandler(
   Base: IncrementalCacheHandlerClass,
 ): IncrementalCacheHandlerClass {
   const { coordinator, debug } = runtime;
-  let initPromise: Promise<void> | undefined;
 
+  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
   const sharedManifest = async (): Promise<typeof coordinator.manifest> => {
-    initPromise ??= coordinator.init();
-    await initPromise;
+    await coordinator.init();
     return coordinator.manifest;
   };
 

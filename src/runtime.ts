@@ -16,11 +16,11 @@ export interface Runtime {
 
 export function createRuntime(options: NextCacheOptions = {}): Runtime {
   const config = resolveConfig(options);
-  const client = createClient(config.redis);
-  const keys = createKeyBuilder(config.keyPrefix, config.pubsubChannel);
   const debug = config.debug
     ? (...args: unknown[]) => console.debug("[@aortl/next-cache]", ...args)
     : undefined;
+  const client = createClient(config.redis, connectionErrorReporter(debug));
+  const keys = createKeyBuilder(config.keyPrefix, config.pubsubChannel);
   const coordinator = new TagCoordinator({
     client,
     keys,
@@ -42,6 +42,22 @@ export function createRuntime(options: NextCacheOptions = {}): Runtime {
         client.disconnect();
       }
     },
+  };
+}
+
+const ERROR_WARN_INTERVAL_MS = 60_000;
+
+// Operators must see connection errors without debug on, but ioredis emits one per retry.
+function connectionErrorReporter(debug?: (...args: unknown[]) => void): (err: Error) => void {
+  let lastWarnedAt = 0;
+  return (err) => {
+    debug?.("redis error", err);
+    const now = Date.now();
+    if (now - lastWarnedAt < ERROR_WARN_INTERVAL_MS) return;
+    lastWarnedAt = now;
+    console.warn(
+      `[@aortl/next-cache] redis error: ${err.message} (cache degraded until reconnected)`,
+    );
   };
 }
 

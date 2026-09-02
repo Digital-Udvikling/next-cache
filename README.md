@@ -72,6 +72,7 @@ Caveats:
 - It extends `next/dist/server/lib/incremental-cache/file-system-cache`, an **internal** Next API — pin your Next version and re-verify on upgrades. The factory fails loudly if the module shape changes.
 - `next` must be installed alongside this package (declared as an optional peer dependency).
 - Only invalidation is coordinated. Each instance still warms its saved pages independently, and a Redis outage degrades to the built-in per-instance behavior rather than failing requests.
+- Redis outages are survivable at any point: handler calls fail fast while Redis is unreachable (no offline queue) and resume once ioredis reconnects; a failed initial sync is retried on the next call, and the subscriber re-reads the tag manifest on reconnect so invalidations published meanwhile are not missed. Connection errors are `console.warn`ed at most once a minute.
 - During `next build` the unmodified FileSystemCache is returned (no Redis in the build environment needed), following `disableDuringBuild`.
 
 ## Programmatic cache API

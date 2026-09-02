@@ -40,12 +40,8 @@ export function buildHandler(
 ): CacheHandler {
   const { coordinator, debug } = runtime;
   const pendingSets = new Map<string, Promise<void>>();
-  let initPromise: Promise<void> | undefined;
-
-  const ensureInit = async (): Promise<void> => {
-    if (!initPromise) initPromise = coordinator.init();
-    await initPromise;
-  };
+  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
+  const ensureInit = (): Promise<void> => coordinator.init();
 
   return {
     async get(cacheKey, _softTags) {
