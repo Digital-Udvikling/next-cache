@@ -1,5 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Redis } from "ioredis";
+import {
+  areTagsStale,
+  tagsManifest,
+} from "next/dist/server/lib/incremental-cache/tags-manifest.external.js";
 import {
   buildIncrementalHandler,
   type IncrementalCacheEntry,
@@ -23,6 +27,24 @@ function pageEntry(tags: string[], lastModified = Date.now()): IncrementalCacheE
 
 function fetchEntry(lastModified = Date.now()): IncrementalCacheEntry {
   return { lastModified, value: { kind: "FETCH" } };
+}
+
+/** A client whose every connection attempt is refused. */
+function unreachableRedis(): Redis {
+  const failing = {
+    status: "wait",
+    connect: async () => {
+      throw new Error("connection refused");
+    },
+    pipeline: () => ({ hset: () => {}, publish: () => {}, exec: async () => [] }),
+    duplicate: () => failing,
+    hscan: async () => {
+      throw new Error("connection refused");
+    },
+    quit: async () => "OK",
+    disconnect: () => {},
+  } as unknown as Redis;
+  return failing;
 }
 
 /**
@@ -56,11 +78,13 @@ describe("incremental handler", () => {
     await flushAll(redis);
     runtime = createRuntime({ redis });
     FakeBase.reset();
+    tagsManifest.clear();
     const Handler = buildIncrementalHandler(runtime, FakeBase);
     handler = new Handler({});
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await runtime.close();
   });
 
@@ -100,6 +124,12 @@ describe("incremental handler", () => {
     expect(await handler.get("other", { kind: "FETCH", tags: ["untouched"] })).not.toBeNull();
   });
 
+  it("mirrors tag updates into Next's tags manifest so saved pages are served stale", async () => {
+    const savedAt = Date.now() - 1;
+    await runtime.coordinator.updateTags(["product:1"], { expire: 3600 });
+    expect(areTagsStale(["product:1"], savedAt)).toBe(true);
+  });
+
   it("delegates revalidateTag to the base handler and publishes to the shared manifest", async () => {
     await handler.revalidateTag(["product:1"], { expire: 0 });
     expect(FakeBase.revalidated).toEqual([{ tags: ["product:1"], durations: { expire: 0 } }]);
@@ -112,22 +142,32 @@ describe("incremental handler", () => {
     expect(runtime.coordinator.manifest.maxExpired(["product:2"])).toBeGreaterThan(0);
   });
 
-  it("degrades to base behavior when Redis is unavailable", async () => {
-    const failing = {
-      status: "wait",
-      connect: async () => {
-        throw new Error("connection refused");
-      },
-      pipeline: () => ({ hset: () => {}, publish: () => {}, exec: async () => [] }),
-      duplicate: () => failing,
-      hgetall: async () => {
-        throw new Error("connection refused");
-      },
-      quit: async () => "OK",
-      disconnect: () => {},
-    } as unknown as Redis;
+  it("mirrors entries the manifest already holds when the handler is built", async () => {
+    const other = createRuntime({ redis: createMockRedis() });
+    const savedAt = Date.now() - 1;
+    await other.coordinator.updateTags(["early"], { expire: 3600 });
+    expect(areTagsStale(["early"], savedAt)).toBe(false);
 
-    const failingRuntime = createRuntime({ redis: failing });
+    buildIncrementalHandler(other, FakeBase);
+    expect(areTagsStale(["early"], savedAt)).toBe(true);
+    await other.close();
+  });
+
+  it("revalidateTag invalidates locally and warns when Redis is unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failingRuntime = createRuntime({ redis: unreachableRedis() });
+    const Handler = buildIncrementalHandler(failingRuntime, FakeBase);
+    const savedAt = Date.now() - 1;
+
+    await new Handler({}).revalidateTag(["product:1"]);
+
+    expect(failingRuntime.coordinator.manifest.areTagsExpired(["product:1"], savedAt)).toBe(true);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("degrades to base behavior when Redis is unavailable", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failingRuntime = createRuntime({ redis: unreachableRedis() });
     FakeBase.reset();
     const Handler = buildIncrementalHandler(failingRuntime, FakeBase);
     const failingHandler = new Handler({});

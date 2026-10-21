@@ -1,6 +1,6 @@
 import type { CacheOptions, NextCacheOptions, ProgrammaticCache } from "../types.js";
 import { ensureConnected } from "../redis/client.js";
-import { createRuntime, type Runtime } from "../runtime.js";
+import { createRuntime, getDefaultRuntime, type Runtime } from "../runtime.js";
 
 interface KvEnvelope<T> {
   v: T;
@@ -15,6 +15,23 @@ export function createCache(options: NextCacheOptions = {}): ProgrammaticCache {
 
 export function attachCache(runtime: Runtime): ProgrammaticCache {
   return wrapRuntime(runtime, false);
+}
+
+/**
+ * Invalidate `tags` on every instance, with the semantics of Next's `updateTags`/`revalidateTag`
+ * durations: tagged entries go stale now and expire after `durations.expire` seconds (immediately
+ * when omitted). Runs on the runtime the cache handlers share and rejects when the shared write
+ * fails, so use it where a lost invalidation must be reported, e.g. a route handler returning 503.
+ */
+export async function updateTags(
+  tags: string[],
+  durations?: { expire?: number },
+  options?: NextCacheOptions,
+): Promise<void> {
+  const { coordinator, debug } = getDefaultRuntime(options);
+  // The update applies locally even when Redis is down, and still rejects if the shared write fails.
+  await coordinator.init().catch((err) => debug?.("updateTags: init failed", err));
+  await coordinator.updateTags(tags, durations);
 }
 
 function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache {

@@ -11,14 +11,11 @@ export function createRedisStorage(runtime: Runtime): Storage {
   return {
     async get(cacheKey) {
       await ensureConnected(client);
-      const raw = await client.get(keys.entry(cacheKey));
+      const raw = await client.getBuffer(keys.entry(cacheKey));
       if (!raw) return undefined;
-      try {
-        return decodeEntry(raw);
-      } catch (err) {
-        runtime.debug?.("remote decode failed", cacheKey, err);
-        return undefined;
-      }
+      const entry = decodeEntry(raw);
+      if (!entry) runtime.debug?.("remote: undecodable entry", cacheKey);
+      return entry;
     },
 
     async set(cacheKey, entry) {

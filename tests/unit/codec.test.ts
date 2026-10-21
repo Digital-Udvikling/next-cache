@@ -34,8 +34,9 @@ describe("codec", () => {
       expire: 3600,
       revalidate: 60,
     };
-    const raw = encodeEntry(entry, body);
-    const decoded = decodeEntry(raw);
+    const decoded = decodeEntry(encodeEntry(entry, body));
+    expect(decoded).toBeDefined();
+    if (!decoded) return;
     expect(decoded.tags).toEqual(["t1", "t2"]);
     expect(decoded.stale).toBe(30);
     expect(decoded.timestamp).toBe(1_700_000_000_000);
@@ -56,7 +57,34 @@ describe("codec", () => {
       revalidate: 0,
     };
     const decoded = decodeEntry(encodeEntry(entry, body));
+    expect(decoded).toBeDefined();
+    if (!decoded) return;
     const out = await collectStream(decoded.value);
     expect(out.equals(body)).toBe(true);
+  });
+
+  it("stores the body as raw bytes, not an encoded string", () => {
+    const body = Buffer.alloc(4096, 0xff);
+    const entry: CacheEntry = {
+      value: toReadableStream(body),
+      tags: [],
+      stale: 0,
+      timestamp: 0,
+      expire: 0,
+      revalidate: 0,
+    };
+    expect(encodeEntry(entry, body).byteLength).toBeLessThan(body.byteLength + 256);
+  });
+
+  it.each([
+    [
+      "the legacy JSON format",
+      Buffer.from(JSON.stringify({ v: "cGF5bG9hZA==", t: [], s: 0, ts: 0, e: 0, r: 0 })),
+    ],
+    ["an empty payload", Buffer.alloc(0)],
+    ["random bytes", Buffer.from([0x01, 0xff, 0xff, 0xff, 0xff, 0x00])],
+    ["a header that is not JSON", Buffer.from([0x01, 0x00, 0x00, 0x00, 0x02, 0x7b, 0x7b])],
+  ])("decodes %s as undefined instead of throwing", (_name, raw) => {
+    expect(decodeEntry(raw)).toBeUndefined();
   });
 });

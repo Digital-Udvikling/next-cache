@@ -1,28 +1,37 @@
 import type { TagManifestEntry } from "../types.js";
 
+/** Receives each entry the manifest stores. */
+export type TagManifestListener = (tag: string, entry: TagManifestEntry) => void;
+
 export class TagManifest {
   private readonly map = new Map<string, TagManifestEntry>();
+  private readonly listeners = new Set<TagManifestListener>();
 
   get(tag: string): TagManifestEntry | undefined {
     return this.map.get(tag);
   }
 
+  /**
+   * Store `entry` unless the tag holds a newer one. `stale` is the write time, so the latest
+   * invalidation wins whole: a hard update after a soft one pulls `expired` back in. On a tie
+   * the incoming entry wins.
+   */
   set(tag: string, entry: TagManifestEntry): void {
     const existing = this.map.get(tag);
-    if (existing && existing.stale >= entry.stale && existing.expired >= entry.expired) {
-      return;
-    }
-    this.map.set(tag, {
-      stale: Math.max(existing?.stale ?? 0, entry.stale),
-      expired: Math.max(existing?.expired ?? 0, entry.expired),
-    });
+    if (existing && existing.stale > entry.stale) return;
+    if (existing && existing.stale === entry.stale && existing.expired === entry.expired) return;
+    this.map.set(tag, entry);
+    for (const listener of this.listeners) listener(tag, entry);
   }
 
-  replace(entries: Iterable<[string, TagManifestEntry]>): void {
-    this.map.clear();
-    for (const [tag, entry] of entries) {
-      this.map.set(tag, entry);
-    }
+  /**
+   * Call `listener` with every stored entry now and with each one `set` stores later.
+   * Adding a listener that is already subscribed does nothing.
+   */
+  addListener(listener: TagManifestListener): void {
+    if (this.listeners.has(listener)) return;
+    this.listeners.add(listener);
+    for (const [tag, entry] of this.map) listener(tag, entry);
   }
 
   entries(): IterableIterator<[string, TagManifestEntry]> {

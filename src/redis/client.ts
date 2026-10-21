@@ -9,10 +9,14 @@ export class RedisNotReadyError extends Error {
   }
 }
 
-// No offline queue: a command issued while disconnected would otherwise block until
-// ioredis reconnects or gives up (~20 retries), stalling the request.
+// A cache must never be slower than a miss. Without the offline queue a command issued while
+// disconnected fails instead of waiting out ioredis's ~20 retries; the timeouts bound a hung
+// or unreachable Redis, which the handlers then treat as a miss. Caller options override these.
 const OWN_CLIENT_OPTIONS: RedisOptions = {
   enableOfflineQueue: false,
+  connectTimeout: 1000,
+  commandTimeout: 500,
+  maxRetriesPerRequest: 1,
 };
 
 /**

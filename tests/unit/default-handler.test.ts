@@ -3,6 +3,7 @@ import type { CacheEntry, CacheHandler } from "../../src/types.js";
 import { buildDefaultHandler } from "../../src/handlers/default.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import { createMockRedis, flushAll } from "../helpers/redis-mock.js";
+import { createUnreachableRedis } from "../helpers/redis-unreachable.js";
 import { collectStream, toReadableStream } from "../helpers/streams.js";
 
 function entry(overrides: Partial<CacheEntry> = {}): CacheEntry {
@@ -125,5 +126,34 @@ describe("default handler", () => {
     expect(result).toBeDefined();
     if (!result) return;
     expect((await collectStream(result.value)).toString()).toBe("delayed");
+  });
+});
+
+describe("default handler while Redis is unreachable", () => {
+  let runtime: Runtime;
+  let handler: CacheHandler;
+
+  beforeEach(() => {
+    runtime = createRuntime({ redis: createUnreachableRedis() });
+    handler = buildDefaultHandler(runtime);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await runtime.close();
+  });
+
+  it("still caches in memory", async () => {
+    await handler.set("k", Promise.resolve(entry({ value: toReadableStream("offline") })));
+    const got = await handler.get("k", []);
+    expect(got).toBeDefined();
+    if (!got) return;
+    expect(await collectStream(got.value)).toEqual(Buffer.from("offline"));
+  });
+
+  it("warns when updateTags cannot reach Redis, even with debug off", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await handler.updateTags(["foo"]);
+    expect(warn).toHaveBeenCalled();
   });
 });
