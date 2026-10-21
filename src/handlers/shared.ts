@@ -3,7 +3,7 @@ import type { Runtime } from "../runtime.js";
 import { isDevServer } from "../config.js";
 
 export interface Storage {
-  /** Entries live only in this process, so reads may be served before the tag manifest loads. */
+  /** Entries live only in this process, so reads never wait for the tag manifest to load. */
   readonly local?: boolean;
   get(cacheKey: string): Promise<CacheEntry | undefined>;
   set(cacheKey: string, entry: CacheEntry): Promise<void>;
@@ -68,12 +68,18 @@ export function buildHandler(
 
   return {
     async get(cacheKey, _softTags) {
-      try {
-        await ensureInit();
-      } catch (err) {
-        debug?.(label, "init failed", err);
-        // Shared entries may carry tags invalidated elsewhere that the manifest has yet to load.
-        if (!storage.local) return undefined;
+      if (storage.local) {
+        // Local entries were written after boot, so no manifest is needed to serve them;
+        // invalidations from elsewhere apply once it loads.
+        ensureInit().catch((err) => debug?.(label, "init failed", err));
+      } else {
+        try {
+          await ensureInit();
+        } catch (err) {
+          debug?.(label, "init failed", err);
+          // Shared entries may carry tags invalidated elsewhere that the manifest has yet to load.
+          return undefined;
+        }
       }
 
       const pending = pendingSets.get(cacheKey);

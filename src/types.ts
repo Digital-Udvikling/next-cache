@@ -66,6 +66,11 @@ export interface ProgrammaticCache {
     factory: () => Promise<T> | T,
     options?: CacheOptions,
   ): Promise<T>;
-  invalidateTag(tag: string | string[]): Promise<void>;
+  /**
+   * Invalidate `tag` on every instance; rejects when the shared write fails. `durations` has the
+   * semantics of Next's `updateTags`: omitted, tagged entries expire now; given, they go stale now
+   * and expire after `durations.expire` seconds (keeping their current expiry when it is absent).
+   */
+  invalidateTag(tag: string | string[], durations?: { expire?: number }): Promise<void>;
   close(): Promise<void>;
 }

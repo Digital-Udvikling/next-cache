@@ -108,7 +108,7 @@ Next.js 16's `revalidateTag(tag, profile)` passes the cacheLife profile's `expir
 
 ### Confirmed invalidation
 
-The cache handlers never fail a request over Redis: if `revalidateTag()` cannot write the invalidation to Redis, they warn and carry on, and other instances keep serving the old entries. When a route handler needs to know, call `updateTags` instead. It takes the same durations as Next's `updateTags` (omit them to expire immediately, pass `{ expire }` for a `revalidateTag(tag, profile)`-style soft invalidation), runs on the runtime the handlers share, and rejects when the shared write fails:
+The cache handlers never fail a request over Redis: if `revalidateTag()` cannot write the invalidation to Redis, they warn and carry on, and other instances keep serving the old entries. When a route handler needs to know, call `updateTags` instead. It takes the same durations as Next's `updateTags` (omit them to expire immediately, pass `{ expire }` for a `revalidateTag(tag, profile)`-style soft invalidation), runs on the default runtime the `create*Handler` factories share, and rejects when the shared write fails:
 
 ```ts
 import { updateTags } from "@aortl/next-cache";
@@ -123,6 +123,8 @@ export async function POST(request: Request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+If you build the handlers on your own runtime (see [Sharing a runtime](#sharing-a-runtime)), use `attachCache(runtime).invalidateTag(tags, durations)` instead. It has the same semantics, and `updateTags` would write through a separate default runtime.
 
 ## Configuration
 

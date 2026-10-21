@@ -23,7 +23,8 @@ export function attachCache(runtime: Runtime): ProgrammaticCache {
  * after `durations.expire` seconds, keeping their current expiry when `expire` is absent. Runs on
  * the default runtime, which the factory-built cache handlers share, and rejects when the shared
  * write fails, so use it where a lost invalidation must be reported, e.g. a route handler
- * returning 503.
+ * returning 503. `options` only matter for the call that creates the default runtime; with a
+ * runtime built by `createRuntime`, use `attachCache(runtime).invalidateTag(tags, durations)`.
  */
 export async function updateTags(
   tags: string[],
@@ -113,11 +114,12 @@ function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache 
       return promise;
     },
 
-    async invalidateTag(tag: string | string[]): Promise<void> {
+    async invalidateTag(tag: string | string[], durations?: { expire?: number }): Promise<void> {
       const tags = Array.isArray(tag) ? tag : [tag];
       if (tags.length === 0) return;
-      await ensureInit();
-      await coordinator.updateTags(tags);
+      // Writing needs no manifest; init only starts this instance listening for invalidations.
+      ensureInit().catch((err) => debug?.("cache.invalidateTag: init failed", err));
+      await coordinator.updateTags(tags, durations);
     },
 
     async close(): Promise<void> {
