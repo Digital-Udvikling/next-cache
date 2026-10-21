@@ -37,8 +37,10 @@ export class TagCoordinator {
   private readonly debug?: (...args: unknown[]) => void;
   private subscriber: Redis | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
-  // Set while a reconnected subscriber's re-read has yet to succeed: pub/sub alone can't catch up.
-  private resyncPending = false;
+  // Pub/sub alone can't catch up after a reconnect: only a re-read that started after the latest
+  // subscriber "ready" (a later generation) clears the backlog.
+  private subscriberGeneration = 0;
+  private syncedGeneration = 0;
   private initialized = false;
   private initPromise: Promise<void> | undefined;
   private closed = false;
@@ -89,13 +91,8 @@ export class TagCoordinator {
         this.handleMessage(raw);
       });
       subscriber.on("ready", () => {
-        this.resyncPending = true;
-        this.fullSync().then(
-          () => {
-            this.resyncPending = false;
-          },
-          (err) => this.debug?.("re-sync failed", err),
-        );
+        this.subscriberGeneration += 1;
+        this.catchUp().catch((err) => this.debug?.("re-sync failed", err));
       });
       subscriber.on("error", (err) => {
         this.debug?.("subscriber error", err);
@@ -134,8 +131,15 @@ export class TagCoordinator {
       await this.fullSync();
       return;
     }
-    if (this.subscriber?.status === "ready" && !this.resyncPending) return;
+    const caughtUp = this.syncedGeneration === this.subscriberGeneration;
+    if (this.subscriber?.status === "ready" && caughtUp) return;
     await this.degradedSync();
+  }
+
+  private async catchUp(): Promise<void> {
+    const generation = this.subscriberGeneration;
+    await this.fullSync();
+    this.syncedGeneration = Math.max(this.syncedGeneration, generation);
   }
 
   private degradedSync(): Promise<void> {
@@ -145,8 +149,7 @@ export class TagCoordinator {
       await ensureConnected(this.client);
       // Only a re-read that reaches Redis spends the interval; failing fast costs Redis nothing.
       this.lastDegradedSyncAt = Date.now();
-      await this.fullSync();
-      this.resyncPending = false;
+      await this.catchUp();
     })().finally(() => {
       this.degradedSyncInFlight = undefined;
     });
@@ -184,16 +187,24 @@ export class TagCoordinator {
   }
 
   /**
-   * Invalidate `tags`: apply the update to the local manifest, then write it to the Redis hash
-   * and publish it. Rejects when Redis is unreachable or any write fails; the local update stays.
-   * Identical calls (same tags in any order, same expiry) in one macrotask share one write.
+   * Invalidate `tags` with Next's `updateTags` semantics: without `durations` they expire now;
+   * with them they go stale now and expire after `durations.expire` seconds, or keep their
+   * current expiry when `expire` is absent. Applies the update to the local manifest, then writes
+   * it to the Redis hash and publishes it. Rejects when Redis is unreachable or any write fails;
+   * the local update stays. Identical calls (same tags in any order, same durations) in one
+   * macrotask share one write.
    */
   async updateTags(tags: string[], durations?: { expire?: number }): Promise<void> {
     if (tags.length === 0) return;
-    const expire = durations?.expire;
-    const expireMs =
-      typeof expire === "number" && Number.isFinite(expire) && expire > 0 ? expire * 1000 : 0;
-    const key = JSON.stringify([[...new Set(tags)].sort(), expireMs]);
+    let expireMs: number | undefined = 0;
+    if (durations) {
+      const { expire } = durations;
+      if (expire === undefined) expireMs = undefined;
+      else if (typeof expire === "number" && Number.isFinite(expire) && expire > 0) {
+        expireMs = expire * 1000;
+      }
+    }
+    const key = JSON.stringify([[...new Set(tags)].sort(), expireMs ?? null]);
     const pending = this.pendingUpdates.get(key);
     if (pending) return pending;
 
@@ -206,22 +217,33 @@ export class TagCoordinator {
     return update;
   }
 
-  private async writeTags(tags: string[], expireMs: number): Promise<void> {
+  /** `expireMs` undefined marks the tags stale only, keeping each one's current expiry. */
+  private async writeTags(tags: string[], expireMs: number | undefined): Promise<void> {
     const now = Date.now();
-    const entry: TagManifestEntry = { stale: now, expired: now + expireMs };
-    this.debug?.("updateTags", { tags, entry });
-    for (const tag of tags) {
-      this.manifest.set(tag, entry);
+    // Tags that end up with the same entry share one pub/sub message.
+    const groups = new Map<number, PubsubMessage>();
+    for (const tag of new Set(tags)) {
+      const expired =
+        expireMs === undefined ? (this.manifest.get(tag)?.expired ?? 0) : now + expireMs;
+      let group = groups.get(expired);
+      if (!group) {
+        group = { tags: [], entry: { stale: now, expired } };
+        groups.set(expired, group);
+      }
+      group.tags.push(tag);
+      this.manifest.set(tag, group.entry);
     }
+    this.debug?.("updateTags", [...groups.values()]);
 
     await ensureConnected(this.client);
     const pipeline = this.client.pipeline();
-    for (const tag of tags) {
-      pipeline.hset(this.keys.tagsHash(), tag, JSON.stringify(entry));
-    }
-    if (this.pubsubEnabled) {
-      const message: PubsubMessage = { tags, entry };
-      pipeline.publish(this.keys.pubsubChannel, JSON.stringify(message));
+    for (const message of groups.values()) {
+      for (const tag of message.tags) {
+        pipeline.hset(this.keys.tagsHash(), tag, JSON.stringify(message.entry));
+      }
+      if (this.pubsubEnabled) {
+        pipeline.publish(this.keys.pubsubChannel, JSON.stringify(message));
+      }
     }
     // exec() resolves with per-command errors (READONLY after a failover, OOM) instead of rejecting.
     const results = await pipeline.exec();

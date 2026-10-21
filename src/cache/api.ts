@@ -19,9 +19,11 @@ export function attachCache(runtime: Runtime): ProgrammaticCache {
 
 /**
  * Invalidate `tags` on every instance, with the semantics of Next's `updateTags`/`revalidateTag`
- * durations: tagged entries go stale now and expire after `durations.expire` seconds (immediately
- * when omitted). Runs on the runtime the cache handlers share and rejects when the shared write
- * fails, so use it where a lost invalidation must be reported, e.g. a route handler returning 503.
+ * durations: without `durations` tagged entries expire now; with them they go stale now and expire
+ * after `durations.expire` seconds, keeping their current expiry when `expire` is absent. Runs on
+ * the default runtime, which the factory-built cache handlers share, and rejects when the shared
+ * write fails, so use it where a lost invalidation must be reported, e.g. a route handler
+ * returning 503.
  */
 export async function updateTags(
   tags: string[],
@@ -29,18 +31,15 @@ export async function updateTags(
   options?: NextCacheOptions,
 ): Promise<void> {
   const { coordinator, debug } = getDefaultRuntime(options);
-  // The update applies locally even when Redis is down, and still rejects if the shared write fails.
-  await coordinator.init().catch((err) => debug?.("updateTags: init failed", err));
+  // Writing needs no manifest; init only starts this instance listening for invalidations.
+  coordinator.init().catch((err) => debug?.("updateTags: init failed", err));
   await coordinator.updateTags(tags, durations);
 }
 
 function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache {
   const { client, keys, coordinator, debug } = runtime;
-  let initPromise: Promise<void> | undefined;
-  const ensureInit = async (): Promise<void> => {
-    if (!initPromise) initPromise = coordinator.init();
-    await initPromise;
-  };
+  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
+  const ensureInit = (): Promise<void> => coordinator.init();
 
   const inflight = new Map<string, Promise<unknown>>();
 

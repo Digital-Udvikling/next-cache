@@ -1,4 +1,3 @@
-import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildRemoteHandler,
@@ -9,17 +8,8 @@ import {
   type NextCacheOptions,
 } from "../../src/index.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
+import { freePort } from "../helpers/relay.js";
 import { toReadableStream } from "../helpers/streams.js";
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const probe = net.createServer();
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as net.AddressInfo;
-      probe.close(() => resolve(port));
-    });
-  });
-}
 
 describe("updateTags (integration)", () => {
   let redis: RealRedis;

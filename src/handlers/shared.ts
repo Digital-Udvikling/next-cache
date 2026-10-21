@@ -24,6 +24,27 @@ export const MIN_DEV_RETENTION_SECONDS = 300;
  */
 export type DropAfter = "revalidate" | "expire";
 
+// Next hands one invalidation to every handler and the coordinator joins them into one write, so
+// its failure reaches each handler; report each failure once.
+const reportedInvalidationFailures = new WeakSet<object>();
+
+export function warnInvalidationFailed(
+  runtime: Runtime,
+  label: string,
+  tags: string[],
+  err: unknown,
+): void {
+  if (typeof err === "object" && err !== null) {
+    if (reportedInvalidationFailures.has(err)) return;
+    reportedInvalidationFailures.add(err);
+  }
+  runtime.warn(
+    `${label}: invalidating tags failed; other instances may serve stale entries`,
+    tags,
+    err,
+  );
+}
+
 export function noopHandler(): CacheHandler {
   return {
     get: async () => undefined,
@@ -40,7 +61,7 @@ export function buildHandler(
   label: string,
   dropAfter: DropAfter,
 ): CacheHandler {
-  const { coordinator, debug, warn } = runtime;
+  const { coordinator, debug } = runtime;
   const pendingSets = new Map<string, Promise<void>>();
   // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
   const ensureInit = (): Promise<void> => coordinator.init();
@@ -106,9 +127,9 @@ export function buildHandler(
       });
       pendingSets.set(cacheKey, tracker);
 
+      // Writing needs no manifest, so don't hold the write (and reads waiting on it) for init.
+      ensureInit().catch((err) => debug?.(label, "init failed", err));
       try {
-        // Writing needs no manifest; a failed init only means invalidations are unknown for now.
-        await ensureInit().catch((err) => debug?.(label, "init failed", err));
         const entry = await pendingEntry;
         // An `expire: 0` entry is dynamic: the 'use cache' wrapper regenerates
         // it on every read, so storing it is a wasted write (and, for Redis,
@@ -148,16 +169,12 @@ export function buildHandler(
     },
 
     async updateTags(tags, durations) {
+      // The update needs no manifest and applies locally even when Redis is down.
+      ensureInit().catch((err) => debug?.(label, "init failed", err));
       try {
-        // Still attempt the update without init: it applies locally even when Redis is down.
-        await ensureInit().catch((err) => debug?.(label, "init failed", err));
         await coordinator.updateTags(tags, durations);
       } catch (err) {
-        warn(
-          `${label}: invalidating tags failed; other instances may serve stale entries`,
-          tags,
-          err,
-        );
+        warnInvalidationFailed(runtime, label, tags, err);
       }
     },
   };
