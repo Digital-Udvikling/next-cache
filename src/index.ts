@@ -20,6 +20,6 @@ export {
   type IncrementalCacheHandlerClass,
   type IncrementalGetContext,
 } from "./handlers/incremental.js";
-export { createCache, attachCache } from "./cache/api.js";
+export { createCache, attachCache, updateTags } from "./cache/api.js";
 export { createRuntime, getDefaultRuntime, resetDefaultRuntime, type Runtime } from "./runtime.js";
 export { resolveConfig } from "./config.js";

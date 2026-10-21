@@ -57,9 +57,9 @@ Set `REDIS_URL` in your environment and you're done. With no options, the factor
 ### How it works
 
 - **`'use cache'`** entries live in each instance's in-memory LRU. Reads stay local — no Redis round-trip for cache hits. When `revalidateTag()` runs on any instance, that instance writes the new tag timestamp to a Redis hash and publishes on a channel; every other instance picks the change up over pub/sub and discards the affected entries on their next read.
-- **`'use cache: remote'`** entries are JSON-encoded and stored in Redis with a TTL matching `expire`. Any instance can serve the cache. Entries past their `revalidate` time are still served (stale-while-revalidate) — Next.js refreshes them in the background — and are only dropped once past `expire`. Dynamic entries (`expire: 0`) are never written. Tag invalidation uses the same Redis-backed manifest.
+- **`'use cache: remote'`** entries are stored in Redis as raw bytes behind a small metadata header, with a TTL matching `expire`. Entries in the older JSON format read as misses, so the remote cache starts cold after upgrading. Any instance can serve the cache. Entries past their `revalidate` time are still served (stale-while-revalidate) — Next.js refreshes them in the background — and are only dropped once past `expire`. Dynamic entries (`expire: 0`) are never written. Tag invalidation uses the same Redis-backed manifest.
 - The programmatic `createCache` API uses the same manifest, so `cache.invalidateTag("foo")` also flushes any `'use cache'` / `'use cache: remote'` entries tagged `foo`.
-- The **incremental** handler keeps page storage on the local filesystem but checks every read against the shared manifest, and publishes its own `revalidateTag()` calls to it.
+- The **incremental** handler keeps page storage on the local filesystem but checks every read against the shared manifest, and publishes its own `revalidateTag()` calls to it. It also mirrors the shared manifest into Next's in-process tag map, which Next consults to serve saved pages stale-while-revalidate, so a soft `revalidateTag(tag, profile)` reaches every instance.
 
 ### The incremental handler
 
@@ -72,7 +72,7 @@ Caveats:
 - It extends `next/dist/server/lib/incremental-cache/file-system-cache`, an **internal** Next API — pin your Next version and re-verify on upgrades. The factory fails loudly if the module shape changes.
 - `next` must be installed alongside this package (declared as an optional peer dependency).
 - Only invalidation is coordinated. Each instance still warms its saved pages independently, and a Redis outage degrades to the built-in per-instance behavior rather than failing requests.
-- Redis outages are survivable at any point: handler calls fail fast while Redis is unreachable (no offline queue) and resume once ioredis reconnects; a failed initial sync is retried on the next call, and the subscriber re-reads the tag manifest on reconnect so invalidations published meanwhile are not missed. Connection errors are `console.warn`ed at most once a minute.
+- Redis outages are survivable at any point: handler calls fail fast while Redis is unreachable or hung and resume once ioredis reconnects; a failed initial sync is retried on the next call, and the subscriber re-reads the tag manifest on reconnect so invalidations published meanwhile are not missed. Meanwhile the `default` handler keeps caching in its in-memory LRU, expiring entries by time only since tag invalidations from other instances cannot reach it, and the `remote` handler misses. Connection errors are `console.warn`ed at most once a minute, and every `revalidateTag()` that fails to reach Redis is `console.warn`ed.
 - During `next build` the unmodified FileSystemCache is returned (no Redis in the build environment needed), following `disableDuringBuild`.
 
 ## Programmatic cache API
@@ -100,6 +100,30 @@ await cache.close(); // tear down Redis connection on shutdown
 
 The cache stores values as JSON, so values must be JSON-serializable (`Date` objects become strings; `undefined` is dropped from objects; class instances lose their prototype). If you need richer serialization, encode the value yourself before `set`.
 
+## Invalidation
+
+### `revalidateTag` semantics
+
+Next.js 16's `revalidateTag(tag, profile)` passes the cacheLife profile's `expire` to the cache handlers' `updateTags(tags, { expire })`. Tagged entries become stale immediately on every instance, so Next.js regenerates them, but are only dropped outright once `expire` seconds have passed (Next.js's `areTagsExpired`: `expired <= now AND expired > entry.timestamp`). To drop entries immediately, use `updateTag(tag)` from a Server Action or `revalidateTag(tag, { expire: 0 })` from a route handler.
+
+### Confirmed invalidation
+
+The cache handlers never fail a request over Redis: if `revalidateTag()` cannot write the invalidation to Redis, they warn and carry on, and other instances keep serving the old entries. When a route handler needs to know, call `updateTags` instead. It takes the same durations as Next's `updateTags` (omit them to expire immediately, pass `{ expire }` for a `revalidateTag(tag, profile)`-style soft invalidation), runs on the runtime the handlers share, and rejects when the shared write fails:
+
+```ts
+import { updateTags } from "@aortl/next-cache";
+
+export async function POST(request: Request) {
+  const tag = new URL(request.url).searchParams.get("tag")!;
+  try {
+    await updateTags([tag]);
+  } catch {
+    return new Response("invalidation failed", { status: 503 });
+  }
+  return new Response(null, { status: 204 });
+}
+```
+
 ## Configuration
 
 Both factories and `createCache` accept the same options:
@@ -119,14 +143,18 @@ createDefaultHandler({
 
 | Option                    | Type                              | Default                                              | Notes                                                                      |
 | ------------------------- | --------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
-| `redis`                   | `string \| RedisOptions \| Redis` | `process.env.REDIS_URL ?? "redis://localhost:6379"`  | URL string, ioredis options, or a pre-built `Redis` instance               |
+| `redis`                   | `string \| RedisOptions \| Redis` | `process.env.REDIS_URL ?? "redis://localhost:6379"`  | URL string, ioredis options, or a pre-built `Redis` instance (see below)   |
 | `keyPrefix`               | `string`                          | `process.env.NEXT_CACHE_PREFIX ?? "next-cache:"`     | Prefix for every key + pub/sub channel                                     |
-| `pubsub.enabled`          | `boolean`                         | `true`                                               | Disable to fall back to per-request `HGETALL` polling                      |
+| `pubsub.enabled`          | `boolean`                         | `true`                                               | Disable to fall back to re-reading the tag hash on every request           |
 | `pubsub.channel`          | `string`                          | `"tags"`                                             | Suffix for the pub/sub channel (full channel: `<prefix>__pubsub:<suffix>`) |
 | `defaultHandler.maxItems` | `number`                          | `1000`                                               | LRU item cap for the default handler                                       |
 | `defaultHandler.maxBytes` | `number`                          | `52_428_800` (50 MiB)                                | LRU byte cap for the default handler                                       |
 | `disableDuringBuild`      | `boolean`                         | `true`                                               | Returns a no-op handler when `NEXT_PHASE === "phase-production-build"`     |
 | `debug`                   | `boolean`                         | `process.env.NEXT_PRIVATE_DEBUG_CACHE !== undefined` | Verbose logging                                                            |
+
+### Timeouts
+
+A cache lookup should never be slower than a miss, so clients built from a URL or `RedisOptions` default to `connectTimeout: 1000`, `commandTimeout: 500` and `maxRetriesPerRequest: 1`, with the offline queue disabled. A command that times out counts as a miss. Pass your own values in `RedisOptions` to override them; a pre-built `Redis` instance is used as is.
 
 ### Sharing a runtime
 
@@ -184,10 +212,6 @@ This is a pnpm workspace; scripts live on the root package and need the `-w` (wo
 - `pnpm -w test` runs unit + integration. `pnpm -w test:all` adds e2e.
 - `pnpm -w typecheck` runs `tsc --noEmit`.
 - `pnpm -w build` produces ESM + CJS + `.d.ts` in `dist/`.
-
-### A note on `revalidateTag` semantics
-
-Next.js 16's `revalidateTag(tag, profile)` passes the cacheLife profile's `expire` to the cache handler's `updateTags(tags, { expire })`. Per Next.js's `areTagsExpired` semantics (`expired <= now AND expired > entry.timestamp`), the invalidation only takes effect once we cross the `expired` timestamp. Profile names like `"default"` or `"max"` carry an `expire` of ~136 years — so they _schedule_ an invalidation rather than _fire_ one. To invalidate immediately from a route handler, pass an explicit `{ expire: 0 }`. From a Server Action, use `updateTag(tag)` (which Next.js routes to immediate invalidation internally).
 
 ## Releasing
 

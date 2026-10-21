@@ -1,7 +1,10 @@
 import type { CacheEntry } from "../types.js";
 
-export interface SerializedEntry {
-  v: string;
+// Layout: FORMAT_VERSION byte, uint32BE header length, JSON header, raw body bytes.
+const FORMAT_VERSION = 1;
+const PREFIX_BYTES = 5;
+
+interface EntryHeader {
   t: string[];
   s: number;
   ts: number;
@@ -33,27 +36,56 @@ export function bufferToStream(buf: Buffer): ReadableStream<Uint8Array> {
   });
 }
 
-export function encodeEntry(entry: CacheEntry, body: Buffer): string {
-  const payload: SerializedEntry = {
-    v: body.toString("base64"),
+/** Serialize `entry`'s metadata and `body` (its already-read value) into one binary payload. */
+export function encodeEntry(entry: CacheEntry, body: Buffer): Buffer {
+  const header: EntryHeader = {
     t: entry.tags,
     s: entry.stale,
     ts: entry.timestamp,
     e: entry.expire,
     r: entry.revalidate,
   };
-  return JSON.stringify(payload);
+  const headerBytes = Buffer.from(JSON.stringify(header), "utf8");
+  const prefix = Buffer.alloc(PREFIX_BYTES);
+  prefix.writeUInt8(FORMAT_VERSION, 0);
+  prefix.writeUInt32BE(headerBytes.byteLength, 1);
+  return Buffer.concat([prefix, headerBytes, body]);
 }
 
-export function decodeEntry(raw: string): CacheEntry {
-  const payload = JSON.parse(raw) as SerializedEntry;
-  const buf = Buffer.from(payload.v, "base64");
+/**
+ * Parse a payload written by `encodeEntry`. Returns undefined, never throws, for anything else
+ * (an older format, another version, truncated or corrupt bytes), so callers can treat it as a miss.
+ */
+export function decodeEntry(raw: Buffer): CacheEntry | undefined {
+  if (raw.byteLength < PREFIX_BYTES || raw.readUInt8(0) !== FORMAT_VERSION) return undefined;
+  const headerEnd = PREFIX_BYTES + raw.readUInt32BE(1);
+  if (headerEnd > raw.byteLength) return undefined;
+  let header: unknown;
+  try {
+    header = JSON.parse(raw.toString("utf8", PREFIX_BYTES, headerEnd));
+  } catch {
+    return undefined;
+  }
+  if (!isEntryHeader(header)) return undefined;
   return {
-    value: bufferToStream(buf),
-    tags: payload.t,
-    stale: payload.s,
-    timestamp: payload.ts,
-    expire: payload.e,
-    revalidate: payload.r,
+    value: bufferToStream(raw.subarray(headerEnd)),
+    tags: header.t,
+    stale: header.s,
+    timestamp: header.ts,
+    expire: header.e,
+    revalidate: header.r,
   };
+}
+
+function isEntryHeader(value: unknown): value is EntryHeader {
+  if (typeof value !== "object" || value === null) return false;
+  const h = value as Record<string, unknown>;
+  return (
+    Array.isArray(h.t) &&
+    h.t.every((tag) => typeof tag === "string") &&
+    typeof h.s === "number" &&
+    typeof h.ts === "number" &&
+    typeof h.e === "number" &&
+    typeof h.r === "number"
+  );
 }

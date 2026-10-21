@@ -11,6 +11,8 @@ export interface Runtime {
   keys: KeyBuilder;
   coordinator: TagCoordinator;
   debug?: (...args: unknown[]) => void;
+  /** Reports failures operators must see, whether or not debug is on. */
+  warn: (...args: unknown[]) => void;
   close(): Promise<void>;
 }
 
@@ -34,6 +36,7 @@ export function createRuntime(options: NextCacheOptions = {}): Runtime {
     keys,
     coordinator,
     debug,
+    warn: (...args: unknown[]) => console.warn("[@aortl/next-cache]", ...args),
     async close() {
       await coordinator.close();
       try {

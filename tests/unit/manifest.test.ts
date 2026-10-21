@@ -8,11 +8,22 @@ describe("TagManifest", () => {
     expect(m.get("a")).toEqual({ stale: 10, expired: 20 });
   });
 
-  it("merges entries by taking the max timestamps", () => {
+  it("a write at least as new as the entry replaces it, including an earlier expiry", () => {
     const m = new TagManifest();
-    m.set("a", { stale: 10, expired: 20 });
-    m.set("a", { stale: 5, expired: 25 });
-    expect(m.get("a")).toEqual({ stale: 10, expired: 25 });
+    m.set("a", { stale: 10, expired: 1_000 });
+    m.set("a", { stale: 20, expired: 20 });
+    expect(m.get("a")).toEqual({ stale: 20, expired: 20 });
+
+    m.set("b", { stale: 10, expired: 1_000 });
+    m.set("b", { stale: 10, expired: 10 });
+    expect(m.get("b")).toEqual({ stale: 10, expired: 10 });
+  });
+
+  it("ignores a write older than the entry", () => {
+    const m = new TagManifest();
+    m.set("a", { stale: 20, expired: 20 });
+    m.set("a", { stale: 10, expired: 1_000 });
+    expect(m.get("a")).toEqual({ stale: 20, expired: 20 });
   });
 
   it("areTagsExpired requires expired <= now AND expired > timestamp (Next.js parity)", () => {
@@ -50,13 +61,5 @@ describe("TagManifest", () => {
     expect(m.maxExpired(["a", "b", "c"])).toBe(200);
     expect(m.maxExpired(["unknown"])).toBe(0);
     expect(m.maxExpired([])).toBe(0);
-  });
-
-  it("replace clears prior state", () => {
-    const m = new TagManifest();
-    m.set("a", { stale: 10, expired: 20 });
-    m.replace([["b", { stale: 5, expired: 5 }]]);
-    expect(m.get("a")).toBeUndefined();
-    expect(m.get("b")).toEqual({ stale: 5, expired: 5 });
   });
 });

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { CacheEntry, CacheHandler } from "../../src/types.js";
 import { buildRemoteHandler } from "../../src/handlers/remote.js";
@@ -70,6 +71,20 @@ describe("remote handler (integration)", () => {
     expect(got).toBeDefined();
     if (!got) return;
     expect((await collectStream(got.value)).equals(body)).toBe(true);
+  });
+
+  it("stores a binary body without encoding overhead", async () => {
+    const body = randomBytes(64 * 1024);
+    await handler.set("k", Promise.resolve(entry({ value: toReadableStream(body) })));
+
+    const got = await handler.get("k", []);
+    expect(got).toBeDefined();
+    if (!got) return;
+    expect((await collectStream(got.value)).equals(body)).toBe(true);
+
+    const raw = redis.newClient();
+    const stored = await raw.strlen(runtime.keys.entry("k"));
+    expect(stored).toBeLessThan(body.length * 1.1);
   });
 
   it("a second runtime sees entries written by the first", async () => {

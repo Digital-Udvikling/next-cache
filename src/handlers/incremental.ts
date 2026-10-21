@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import { isBuildPhase } from "../config.js";
 import { getDefaultRuntime, type Runtime } from "../runtime.js";
+import type { TagManifestListener } from "../tags/manifest.js";
 import type { NextCacheOptions } from "../types.js";
 
 // The incremental (ISR) cache is Next's *singular* `cacheHandler` — a separate
@@ -18,11 +19,18 @@ import type { NextCacheOptions } from "../types.js";
 // reads are additionally checked against the shared Redis tag manifest that
 // the default/remote handlers maintain. A tag invalidation received by any
 // instance therefore invalidates the saved pages on all of them.
+//
+// Staleness is the exception: Next itself decides whether to serve a saved page
+// stale-while-revalidate by checking its in-process tag map, which FileSystemCache
+// only updates on the instance that ran `revalidateTag()`. Every tag update the
+// shared manifest takes is therefore mirrored into that map too, so a soft
+// invalidation (`revalidateTag(tag, profile)`) reaches every instance.
 
 /** Response-header key Next uses to persist a page entry's cache tags. */
 const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
 
 const FILE_SYSTEM_CACHE_PATH = "next/dist/server/lib/incremental-cache/file-system-cache.js";
+const TAGS_MANIFEST_PATH = "next/dist/server/lib/incremental-cache/tags-manifest.external.js";
 
 export interface IncrementalCacheEntry {
   lastModified: number;
@@ -63,11 +71,37 @@ function entryTags(entry: IncrementalCacheEntry, ctx: IncrementalGetContext): st
   return typeof header === "string" && header.length > 0 ? header.split(",") : [];
 }
 
+// One listener for every runtime, so adding it again to a manifest is a no-op.
+let mirrorIntoNext: TagManifestListener | undefined;
+
+function mirrorTagsIntoNext(runtime: Runtime): void {
+  if (!mirrorIntoNext) {
+    let tagsManifest: unknown;
+    try {
+      tagsManifest = (requireFromHere(TAGS_MANIFEST_PATH) as { tagsManifest?: unknown })
+        .tagsManifest;
+    } catch (err) {
+      runtime.debug?.("incremental", "not mirroring tags into Next: load failed", err);
+      return;
+    }
+    if (!(tagsManifest instanceof Map)) {
+      runtime.debug?.("incremental", "not mirroring tags into Next: no tagsManifest Map");
+      return;
+    }
+    const target = tagsManifest as Map<string, { stale?: number; expired?: number }>;
+    mirrorIntoNext = (tag, entry) => {
+      target.set(tag, { stale: entry.stale, expired: entry.expired });
+    };
+  }
+  runtime.coordinator.manifest.addListener(mirrorIntoNext);
+}
+
 export function buildIncrementalHandler(
   runtime: Runtime,
   Base: IncrementalCacheHandlerClass,
 ): IncrementalCacheHandlerClass {
-  const { coordinator, debug } = runtime;
+  const { coordinator, debug, warn } = runtime;
+  mirrorTagsIntoNext(runtime);
 
   // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
   const sharedManifest = async (): Promise<typeof coordinator.manifest> => {
@@ -108,29 +142,36 @@ export function buildIncrementalHandler(
 
       // Publish to the shared manifest as well, so the handler works even
       // when the default/remote handlers aren't registered. When they are,
-      // Next calls their updateTags with the same tags; the double write is
-      // idempotent.
+      // Next calls their updateTags for the same invalidation and the
+      // coordinator joins the calls into one write.
       const tagList = typeof tags === "string" ? [tags] : tags;
       if (tagList.length === 0) return;
       try {
-        await sharedManifest();
         await coordinator.updateTags(tagList, durations);
       } catch (err) {
-        debug?.("incremental", "updateTags failed", err);
+        warn(
+          "incremental: invalidating tags failed; other instances may serve stale pages",
+          tagList,
+          err,
+        );
       }
     }
   };
 }
 
-function loadFileSystemCache(): IncrementalCacheHandlerClass {
+function requireFromHere(id: string): unknown {
   // `typeof __filename` (not `typeof require`) distinguishes the CJS build:
   // esbuild rewrites bare `require` to a shim that exists in ESM output too,
   // but throws when called from an ES module.
   const requireModule =
     typeof __filename === "string" ? createRequire(__filename) : createRequire(import.meta.url);
+  return requireModule(id);
+}
+
+function loadFileSystemCache(): IncrementalCacheHandlerClass {
   let mod: { default?: unknown };
   try {
-    mod = requireModule(FILE_SYSTEM_CACHE_PATH) as { default?: unknown };
+    mod = requireFromHere(FILE_SYSTEM_CACHE_PATH) as { default?: unknown };
   } catch (err) {
     throw new Error(
       `@aortl/next-cache: could not load ${FILE_SYSTEM_CACHE_PATH}. ` +

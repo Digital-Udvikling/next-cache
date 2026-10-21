@@ -3,6 +3,7 @@ import type { CacheEntry, CacheHandler } from "../../src/types.js";
 import { buildRemoteHandler } from "../../src/handlers/remote.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import { createMockRedis, flushAll } from "../helpers/redis-mock.js";
+import { createUnreachableRedis } from "../helpers/redis-unreachable.js";
 import { collectStream, toReadableStream } from "../helpers/streams.js";
 
 function entry(overrides: Partial<CacheEntry> = {}): CacheEntry {
@@ -96,5 +97,24 @@ describe("remote handler", () => {
     await handler.updateTags(["x"]);
     const t = await handler.getExpiration(["x"]);
     expect(t).toBeGreaterThan(0);
+  });
+});
+
+describe("remote handler while Redis is unreachable", () => {
+  let runtime: Runtime;
+  let handler: CacheHandler;
+
+  beforeEach(() => {
+    runtime = createRuntime({ redis: createUnreachableRedis() });
+    handler = buildRemoteHandler(runtime);
+  });
+
+  afterEach(async () => {
+    await runtime.close();
+  });
+
+  it("set and get degrade to a miss instead of throwing", async () => {
+    await handler.set("k", Promise.resolve(entry()));
+    expect(await handler.get("k", [])).toBeUndefined();
   });
 });

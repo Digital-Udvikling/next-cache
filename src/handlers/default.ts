@@ -18,6 +18,8 @@ export function createMemoryStorage(runtime: Runtime): Storage {
   });
 
   return {
+    local: true,
+
     async get(cacheKey) {
       const stored = lru.get(cacheKey);
       if (!stored) return undefined;

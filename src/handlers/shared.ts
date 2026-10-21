@@ -3,6 +3,8 @@ import type { Runtime } from "../runtime.js";
 import { isDevServer } from "../config.js";
 
 export interface Storage {
+  /** Entries live only in this process, so reads may be served before the tag manifest loads. */
+  readonly local?: boolean;
   get(cacheKey: string): Promise<CacheEntry | undefined>;
   set(cacheKey: string, entry: CacheEntry): Promise<void>;
 }
@@ -38,7 +40,7 @@ export function buildHandler(
   label: string,
   dropAfter: DropAfter,
 ): CacheHandler {
-  const { coordinator, debug } = runtime;
+  const { coordinator, debug, warn } = runtime;
   const pendingSets = new Map<string, Promise<void>>();
   // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
   const ensureInit = (): Promise<void> => coordinator.init();
@@ -49,7 +51,8 @@ export function buildHandler(
         await ensureInit();
       } catch (err) {
         debug?.(label, "init failed", err);
-        return undefined;
+        // Shared entries may carry tags invalidated elsewhere that the manifest has yet to load.
+        if (!storage.local) return undefined;
       }
 
       const pending = pendingSets.get(cacheKey);
@@ -93,10 +96,7 @@ export function buildHandler(
         revalidate = -1;
       }
 
-      const [returnStream, keepStream] = entry.value.tee();
-      entry.value = keepStream;
-
-      return { ...entry, value: returnStream, revalidate };
+      return { ...entry, revalidate };
     },
 
     async set(cacheKey, pendingEntry) {
@@ -107,7 +107,8 @@ export function buildHandler(
       pendingSets.set(cacheKey, tracker);
 
       try {
-        await ensureInit();
+        // Writing needs no manifest; a failed init only means invalidations are unknown for now.
+        await ensureInit().catch((err) => debug?.(label, "init failed", err));
         const entry = await pendingEntry;
         // An `expire: 0` entry is dynamic: the 'use cache' wrapper regenerates
         // it on every read, so storing it is a wasted write (and, for Redis,
@@ -148,10 +149,15 @@ export function buildHandler(
 
     async updateTags(tags, durations) {
       try {
-        await ensureInit();
+        // Still attempt the update without init: it applies locally even when Redis is down.
+        await ensureInit().catch((err) => debug?.(label, "init failed", err));
         await coordinator.updateTags(tags, durations);
       } catch (err) {
-        debug?.(label, "updateTags failed", err);
+        warn(
+          `${label}: invalidating tags failed; other instances may serve stale entries`,
+          tags,
+          err,
+        );
       }
     },
   };
