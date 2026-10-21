@@ -77,11 +77,3 @@ export async function freePort(): Promise<number> {
     });
   });
 }
-
-export async function until(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("condition not met in time");
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}

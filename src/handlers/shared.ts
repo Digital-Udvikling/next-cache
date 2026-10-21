@@ -3,8 +3,6 @@ import type { Runtime } from "../runtime.js";
 import { isDevServer } from "../config.js";
 
 export interface Storage {
-  /** Entries live only in this process, so reads never wait for the tag manifest to load. */
-  readonly local?: boolean;
   get(cacheKey: string): Promise<CacheEntry | undefined>;
   set(cacheKey: string, entry: CacheEntry): Promise<void>;
 }
@@ -24,25 +22,14 @@ export const MIN_DEV_RETENTION_SECONDS = 300;
  */
 export type DropAfter = "revalidate" | "expire";
 
-// Next hands one invalidation to every handler and the coordinator joins them into one write, so
-// its failure reaches each handler; report each failure once.
-const reportedInvalidationFailures = new WeakSet<object>();
-
-export function warnInvalidationFailed(
-  runtime: Runtime,
-  label: string,
-  tags: string[],
-  err: unknown,
-): void {
-  if (typeof err === "object" && err !== null) {
-    if (reportedInvalidationFailures.has(err)) return;
-    reportedInvalidationFailures.add(err);
-  }
-  runtime.warn(
-    `${label}: invalidating tags failed; other instances may serve stale entries`,
-    tags,
-    err,
-  );
+export interface HandlerPolicy {
+  label: string;
+  dropAfter: DropAfter;
+  /**
+   * Whether reads wait for the tag manifest to load. Process-local entries were written after
+   * boot, so they can be served before it has; shared ones may carry tags invalidated elsewhere.
+   */
+  readsAwaitManifest: boolean;
 }
 
 export function noopHandler(): CacheHandler {
@@ -58,26 +45,20 @@ export function noopHandler(): CacheHandler {
 export function buildHandler(
   runtime: Runtime,
   storage: Storage,
-  label: string,
-  dropAfter: DropAfter,
+  { label, dropAfter, readsAwaitManifest }: HandlerPolicy,
 ): CacheHandler {
   const { coordinator, debug } = runtime;
   const pendingSets = new Map<string, Promise<void>>();
-  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
-  const ensureInit = (): Promise<void> => coordinator.init();
 
   return {
     async get(cacheKey, _softTags) {
-      if (storage.local) {
-        // Local entries were written after boot, so no manifest is needed to serve them;
-        // invalidations from elsewhere apply once it loads.
-        ensureInit().catch((err) => debug?.(label, "init failed", err));
+      if (!readsAwaitManifest) {
+        coordinator.start();
       } else {
         try {
-          await ensureInit();
+          await coordinator.init();
         } catch (err) {
           debug?.(label, "init failed", err);
-          // Shared entries may carry tags invalidated elsewhere that the manifest has yet to load.
           return undefined;
         }
       }
@@ -134,7 +115,7 @@ export function buildHandler(
       pendingSets.set(cacheKey, tracker);
 
       // Writing needs no manifest, so don't hold the write (and reads waiting on it) for init.
-      ensureInit().catch((err) => debug?.(label, "init failed", err));
+      coordinator.start();
       try {
         const entry = await pendingEntry;
         // An `expire: 0` entry is dynamic: the 'use cache' wrapper regenerates
@@ -157,7 +138,7 @@ export function buildHandler(
 
     async refreshTags() {
       try {
-        await ensureInit();
+        await coordinator.init();
         await coordinator.refreshTags();
       } catch (err) {
         debug?.(label, "refreshTags failed", err);
@@ -166,7 +147,7 @@ export function buildHandler(
 
     async getExpiration(tags) {
       try {
-        await ensureInit();
+        await coordinator.init();
         return await coordinator.getExpiration(tags);
       } catch (err) {
         debug?.(label, "getExpiration failed", err);
@@ -175,13 +156,8 @@ export function buildHandler(
     },
 
     async updateTags(tags, durations) {
-      // The update needs no manifest and applies locally even when Redis is down.
-      ensureInit().catch((err) => debug?.(label, "init failed", err));
-      try {
-        await coordinator.updateTags(tags, durations);
-      } catch (err) {
-        warnInvalidationFailed(runtime, label, tags, err);
-      }
+      // The coordinator warns about a failed shared write; Next must not see it.
+      await coordinator.updateTags(tags, durations).catch(() => {});
     },
   };
 }

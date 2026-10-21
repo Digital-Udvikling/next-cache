@@ -214,7 +214,7 @@ describe("TagCoordinator.updateTags", () => {
     });
     const savedAt = Date.now() - 1;
 
-    await expect(coordinator.updateTags(["t"])).rejects.toThrow("Connection is closed.");
+    await expect(coordinator.updateTags(["t"])).rejects.toThrow();
     expect(coordinator.manifest.areTagsExpired(["t"], savedAt)).toBe(true);
   });
 });

@@ -3,21 +3,10 @@ import {
   areTagsStale,
   tagsManifest,
 } from "next/dist/server/lib/incremental-cache/tags-manifest.external.js";
-import {
-  buildIncrementalHandler,
-  type IncrementalCacheHandler,
-} from "../../src/handlers/incremental.js";
+import { buildIncrementalHandler } from "../../src/handlers/incremental.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
+import { NoopIncrementalBase } from "../helpers/incremental.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
-
-/** Stands in for FileSystemCache without touching Next's process-global tags manifest. */
-class NoopBase implements IncrementalCacheHandler {
-  async get() {
-    return null;
-  }
-
-  async revalidateTag() {}
-}
 
 describe("incremental handler (integration)", () => {
   let redis: RealRedis;
@@ -49,7 +38,7 @@ describe("incremental handler (integration)", () => {
   });
 
   it("a soft revalidate on one pod marks saved pages stale on another", async () => {
-    buildIncrementalHandler(podB, NoopBase);
+    buildIncrementalHandler(podB, NoopIncrementalBase);
 
     // Pods share this process's tags manifest: a runtime without an incremental handler must not write it.
     const bystander = createRuntime({ redis: redis.url, keyPrefix: "test-bystander:" });

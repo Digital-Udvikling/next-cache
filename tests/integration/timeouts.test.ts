@@ -5,6 +5,7 @@ import { createRuntime, type Runtime } from "../../src/runtime.js";
 import type { CacheEntry, NextCacheOptions } from "../../src/types.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
 import { toReadableStream } from "../helpers/streams.js";
+import { timed } from "../helpers/timing.js";
 
 function entry(): CacheEntry {
   return {
@@ -17,22 +18,13 @@ function entry(): CacheEntry {
   };
 }
 
-async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> {
-  const started = Date.now();
-  const result = await fn();
-  return { result, ms: Date.now() - started };
-}
-
 describe("redis command timeouts (integration)", () => {
   let redis: RealRedis;
   let admin: Redis;
   let runtime: Runtime | undefined;
-  let pausedUntil = 0;
-
   // Blackholes every client's commands while their sockets stay "ready": a hung Redis.
   async function pause(ms: number): Promise<void> {
     await admin.call("CLIENT", "PAUSE", String(ms), "ALL");
-    pausedUntil = Date.now() + ms;
   }
 
   beforeAll(async () => {
@@ -45,8 +37,7 @@ describe("redis command timeouts (integration)", () => {
   });
 
   afterEach(async () => {
-    const remaining = pausedUntil - Date.now();
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining + 100));
+    await admin.call("CLIENT", "UNPAUSE");
     await runtime?.close();
     runtime = undefined;
   });

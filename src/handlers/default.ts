@@ -18,8 +18,6 @@ export function createMemoryStorage(runtime: Runtime): Storage {
   });
 
   return {
-    local: true,
-
     async get(cacheKey) {
       const stored = lru.get(cacheKey);
       if (!stored) return undefined;
@@ -41,7 +39,11 @@ export function buildDefaultHandler(runtime: Runtime): CacheHandler {
   if (runtime.config.defaultMaxItems === 0 || runtime.config.defaultMaxBytes === 0) {
     return noopHandler();
   }
-  return buildHandler(runtime, createMemoryStorage(runtime), "default", "revalidate");
+  return buildHandler(runtime, createMemoryStorage(runtime), {
+    label: "default",
+    dropAfter: "revalidate",
+    readsAwaitManifest: false,
+  });
 }
 
 export function createDefaultHandler(options: NextCacheOptions = {}): CacheHandler {
