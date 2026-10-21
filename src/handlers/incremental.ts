@@ -4,6 +4,7 @@ import { isBuildPhase } from "../config.js";
 import { getDefaultRuntime, type Runtime } from "../runtime.js";
 import type { TagManifestListener } from "../tags/manifest.js";
 import type { NextCacheOptions } from "../types.js";
+import { warnInvalidationFailed } from "./shared.js";
 
 // The incremental (ISR) cache is Next's *singular* `cacheHandler` — a separate
 // system from the `cacheHandlers` (plural) that back `'use cache'`. It stores
@@ -81,11 +82,17 @@ function mirrorTagsIntoNext(runtime: Runtime): void {
       tagsManifest = (requireFromHere(TAGS_MANIFEST_PATH) as { tagsManifest?: unknown })
         .tagsManifest;
     } catch (err) {
-      runtime.debug?.("incremental", "not mirroring tags into Next: load failed", err);
+      runtime.warn(
+        `incremental: could not load ${TAGS_MANIFEST_PATH}; soft invalidations stay per-instance`,
+        err,
+      );
       return;
     }
     if (!(tagsManifest instanceof Map)) {
-      runtime.debug?.("incremental", "not mirroring tags into Next: no tagsManifest Map");
+      runtime.warn(
+        `incremental: ${TAGS_MANIFEST_PATH} has no tagsManifest Map (unsupported Next version); ` +
+          "soft invalidations stay per-instance",
+      );
       return;
     }
     const target = tagsManifest as Map<string, { stale?: number; expired?: number }>;
@@ -100,7 +107,7 @@ export function buildIncrementalHandler(
   runtime: Runtime,
   Base: IncrementalCacheHandlerClass,
 ): IncrementalCacheHandlerClass {
-  const { coordinator, debug, warn } = runtime;
+  const { coordinator, debug } = runtime;
   mirrorTagsIntoNext(runtime);
 
   // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
@@ -149,11 +156,7 @@ export function buildIncrementalHandler(
       try {
         await coordinator.updateTags(tagList, durations);
       } catch (err) {
-        warn(
-          "incremental: invalidating tags failed; other instances may serve stale pages",
-          tagList,
-          err,
-        );
+        warnInvalidationFailed(runtime, "incremental", tagList, err);
       }
     }
   };

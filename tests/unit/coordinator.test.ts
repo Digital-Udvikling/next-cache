@@ -158,6 +158,24 @@ describe("TagCoordinator.init", () => {
 });
 
 describe("TagCoordinator.updateTags", () => {
+  it("durations without an expire mark the tag stale and keep its expiry, as Next does", async () => {
+    const coordinator = new TagCoordinator({
+      client: asRedis(new FlakyClient(0)),
+      keys,
+      pubsubEnabled: false,
+    });
+    await coordinator.init();
+    const savedAt = Date.now() - 1;
+
+    await coordinator.updateTags(["t"], { expire: 3600 });
+    const expiry = coordinator.manifest.get("t")?.expired;
+    await coordinator.updateTags(["t"], {});
+
+    expect(coordinator.manifest.areTagsStale(["t"], savedAt)).toBe(true);
+    expect(coordinator.manifest.areTagsExpired(["t"], savedAt)).toBe(false);
+    expect(coordinator.manifest.get("t")?.expired).toBe(expiry);
+  });
+
   it("a hard update after a soft one expires the tag immediately", async () => {
     const coordinator = new TagCoordinator({
       client: asRedis(new FlakyClient(0)),
@@ -269,6 +287,33 @@ describe("TagCoordinator.refreshTags", () => {
     before = client.fullReads;
     await burstOfRefreshes(coordinator);
     expect(client.fullReads - before).toBe(1);
+  });
+
+  it("does not count a re-read that predates the latest reconnect as caught up", async () => {
+    const client = new ScriptedClient();
+    const coordinator = new TagCoordinator({ client: asRedis(client), keys, pubsubEnabled: true });
+    await coordinator.init();
+    const subscriber = client.duplicates[0]!;
+
+    // The first reconnect's re-read outlives a second reconnect, whose own re-read fails.
+    const releaseFirst = client.holdNextSync();
+    subscriber.dropConnection();
+    subscriber.backgroundReconnect();
+    await vi.waitFor(() => expect(client.fullReads).toBe(2));
+    client.failNextSync();
+    subscriber.dropConnection();
+    subscriber.backgroundReconnect();
+    await vi.waitFor(() => expect(client.fullReads).toBe(3));
+    releaseFirst({});
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Only a fresh re-read recovers what was published during the second outage.
+    const releaseCatchUp = client.holdNextSync();
+    const refresh = coordinator.refreshTags();
+    await vi.waitFor(() => expect(client.fullReads).toBe(4));
+    releaseCatchUp({ missed: JSON.stringify({ stale: 5, expired: 5 }) });
+    await refresh;
+    expect(coordinator.manifest.get("missed")).toEqual({ stale: 5, expired: 5 });
   });
 
   it("retries a failed re-read after the subscriber reconnects, though it reports ready", async () => {

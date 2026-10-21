@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Redis } from "ioredis";
 import {
   areTagsStale,
   tagsManifest,
@@ -12,6 +11,7 @@ import {
 } from "../../src/handlers/incremental.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import { createMockRedis, flushAll } from "../helpers/redis-mock.js";
+import { createUnreachableRedis } from "../helpers/redis-unreachable.js";
 
 const TAGS_HEADER = "x-next-cache-tags";
 
@@ -27,24 +27,6 @@ function pageEntry(tags: string[], lastModified = Date.now()): IncrementalCacheE
 
 function fetchEntry(lastModified = Date.now()): IncrementalCacheEntry {
   return { lastModified, value: { kind: "FETCH" } };
-}
-
-/** A client whose every connection attempt is refused. */
-function unreachableRedis(): Redis {
-  const failing = {
-    status: "wait",
-    connect: async () => {
-      throw new Error("connection refused");
-    },
-    pipeline: () => ({ hset: () => {}, publish: () => {}, exec: async () => [] }),
-    duplicate: () => failing,
-    hscan: async () => {
-      throw new Error("connection refused");
-    },
-    quit: async () => "OK",
-    disconnect: () => {},
-  } as unknown as Redis;
-  return failing;
 }
 
 /**
@@ -155,7 +137,7 @@ describe("incremental handler", () => {
 
   it("revalidateTag invalidates locally and warns when Redis is unavailable", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const failingRuntime = createRuntime({ redis: unreachableRedis() });
+    const failingRuntime = createRuntime({ redis: createUnreachableRedis() });
     const Handler = buildIncrementalHandler(failingRuntime, FakeBase);
     const savedAt = Date.now() - 1;
 
@@ -167,7 +149,7 @@ describe("incremental handler", () => {
 
   it("degrades to base behavior when Redis is unavailable", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const failingRuntime = createRuntime({ redis: unreachableRedis() });
+    const failingRuntime = createRuntime({ redis: createUnreachableRedis() });
     FakeBase.reset();
     const Handler = buildIncrementalHandler(failingRuntime, FakeBase);
     const failingHandler = new Handler({});
