@@ -6,6 +6,7 @@ export type {
   ProgrammaticCache,
   RedisInput,
   ResolvedConfig,
+  TagDurations,
   TagManifestEntry,
   Timestamp,
 } from "./types.js";

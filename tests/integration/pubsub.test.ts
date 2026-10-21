@@ -1,13 +1,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Redis } from "ioredis";
 import { buildDefaultHandler } from "../../src/handlers/default.js";
-import {
-  buildIncrementalHandler,
-  type IncrementalCacheHandler,
-} from "../../src/handlers/incremental.js";
+import { buildIncrementalHandler } from "../../src/handlers/incremental.js";
 import { buildRemoteHandler } from "../../src/handlers/remote.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import type { CacheHandler } from "../../src/types.js";
+import { NoopIncrementalBase } from "../helpers/incremental.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
 import { toReadableStream } from "../helpers/streams.js";
 
@@ -147,14 +145,6 @@ describe("tag coordinator (integration)", () => {
     let listener: Redis;
     let messages: string[];
 
-    class NoopBase implements IncrementalCacheHandler {
-      async get() {
-        return null;
-      }
-
-      async revalidateTag() {}
-    }
-
     beforeEach(async () => {
       const flush = redis.newClient();
       await flush.flushall();
@@ -174,7 +164,7 @@ describe("tag coordinator (integration)", () => {
 
     it("publishes one message for the handlers' concurrent calls of one invalidation", async () => {
       const handlers = [buildDefaultHandler(runtime), buildRemoteHandler(runtime)];
-      const IncrementalHandler = buildIncrementalHandler(runtime, NoopBase);
+      const IncrementalHandler = buildIncrementalHandler(runtime, NoopIncrementalBase);
       const incremental = new IncrementalHandler({});
       await handlers[0]!.refreshTags();
 
@@ -185,15 +175,18 @@ describe("tag coordinator (integration)", () => {
           incremental.revalidateTag(["product:1"], { expire: 3600 }),
         ]);
 
-      await invalidate();
-      await vi.waitFor(() => expect(messages.length).toBeGreaterThan(0));
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(messages).toHaveLength(1);
+      // Published after the invalidation on the same connection, so it arrives after any duplicate.
+      const settle = async (): Promise<string[]> => {
+        await runtime.client.publish(runtime.keys.pubsubChannel, "sentinel");
+        await vi.waitFor(() => expect(messages.at(-1)).toBe("sentinel"));
+        return messages.filter((m) => m !== "sentinel");
+      };
 
       await invalidate();
-      await vi.waitFor(() => expect(messages.length).toBeGreaterThan(1));
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(messages).toHaveLength(2);
+      expect(await settle()).toHaveLength(1);
+
+      await invalidate();
+      expect(await settle()).toHaveLength(2);
     });
   });
 
@@ -203,7 +196,13 @@ describe("tag coordinator (integration)", () => {
       await seed.flushall();
       const entry = JSON.stringify({ stale: Date.now(), expired: Date.now() });
       const pipeline = seed.pipeline();
-      for (let i = 0; i < 200_000; i++) pipeline.hset("test-large:tags", `product:${i}`, entry);
+      for (let chunk = 0; chunk < 20; chunk++) {
+        const fields = Array.from({ length: 10_000 }, (_, i) => [
+          `product:${chunk * 10_000 + i}`,
+          entry,
+        ]);
+        pipeline.hset("test-large:tags", Object.fromEntries(fields));
+      }
       await pipeline.exec();
       await seed.quit();
 

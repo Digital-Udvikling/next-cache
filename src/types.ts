@@ -11,12 +11,21 @@ export interface CacheEntry {
   revalidate: number;
 }
 
+/**
+ * How an invalidation applies, as in Next's `updateTags`. Omitted, tagged entries expire now.
+ * Given, they go stale now and expire after `expire` seconds, keeping their current expiry when
+ * `expire` is absent.
+ */
+export interface TagDurations {
+  expire?: number;
+}
+
 export interface CacheHandler {
   get(cacheKey: string, softTags: string[]): Promise<CacheEntry | undefined>;
   set(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void>;
   refreshTags(): Promise<void>;
   getExpiration(tags: string[]): Promise<Timestamp>;
-  updateTags(tags: string[], durations?: { expire?: number }): Promise<void>;
+  updateTags(tags: string[], durations?: TagDurations): Promise<void>;
 }
 
 export type RedisInput = Redis | RedisOptions | string;
@@ -66,11 +75,7 @@ export interface ProgrammaticCache {
     factory: () => Promise<T> | T,
     options?: CacheOptions,
   ): Promise<T>;
-  /**
-   * Invalidate `tag` on every instance; rejects when the shared write fails. `durations` has the
-   * semantics of Next's `updateTags`: omitted, tagged entries expire now; given, they go stale now
-   * and expire after `durations.expire` seconds (keeping their current expiry when it is absent).
-   */
-  invalidateTag(tag: string | string[], durations?: { expire?: number }): Promise<void>;
+  /** Invalidate `tag` on every instance (see `TagDurations`); rejects when the shared write fails. */
+  invalidateTag(tag: string | string[], durations?: TagDurations): Promise<void>;
   close(): Promise<void>;
 }

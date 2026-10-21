@@ -2,14 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildDefaultHandler } from "../../src/handlers/default.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import type { CacheHandler } from "../../src/types.js";
-import { Relay, until } from "../helpers/relay.js";
+import { Relay } from "../helpers/relay.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
-
-async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> {
-  const started = Date.now();
-  const result = await fn();
-  return { result, ms: Date.now() - started };
-}
+import { timed, until } from "../helpers/timing.js";
 
 describe("redis outage resilience (integration)", () => {
   let redis: RealRedis;

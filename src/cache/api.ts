@@ -1,4 +1,4 @@
-import type { CacheOptions, NextCacheOptions, ProgrammaticCache } from "../types.js";
+import type { CacheOptions, NextCacheOptions, ProgrammaticCache, TagDurations } from "../types.js";
 import { ensureConnected } from "../redis/client.js";
 import { createRuntime, getDefaultRuntime, type Runtime } from "../runtime.js";
 
@@ -18,36 +18,27 @@ export function attachCache(runtime: Runtime): ProgrammaticCache {
 }
 
 /**
- * Invalidate `tags` on every instance, with the semantics of Next's `updateTags`/`revalidateTag`
- * durations: without `durations` tagged entries expire now; with them they go stale now and expire
- * after `durations.expire` seconds, keeping their current expiry when `expire` is absent. Runs on
- * the default runtime, which the factory-built cache handlers share, and rejects when the shared
- * write fails, so use it where a lost invalidation must be reported, e.g. a route handler
- * returning 503. `options` only matter for the call that creates the default runtime; with a
- * runtime built by `createRuntime`, use `attachCache(runtime).invalidateTag(tags, durations)`.
+ * Invalidate `tags` on every instance (see `TagDurations`) through the default runtime, which the
+ * factory-built cache handlers share. Rejects when the shared write fails, so use it where a lost
+ * invalidation must be reported, e.g. a route handler returning 503. `options` only matter for the
+ * call that creates the default runtime; with your own runtime use `attachCache(runtime).invalidateTag`.
  */
-export async function updateTags(
+export function updateTags(
   tags: string[],
-  durations?: { expire?: number },
+  durations?: TagDurations,
   options?: NextCacheOptions,
 ): Promise<void> {
-  const { coordinator, debug } = getDefaultRuntime(options);
-  // Writing needs no manifest; init only starts this instance listening for invalidations.
-  coordinator.init().catch((err) => debug?.("updateTags: init failed", err));
-  await coordinator.updateTags(tags, durations);
+  return attachCache(getDefaultRuntime(options)).invalidateTag(tags, durations);
 }
 
 function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache {
   const { client, keys, coordinator, debug } = runtime;
-  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
-  const ensureInit = (): Promise<void> => coordinator.init();
-
   const inflight = new Map<string, Promise<unknown>>();
 
   const cache: ProgrammaticCache = {
     async get<T>(key: string): Promise<T | undefined> {
       try {
-        await ensureInit();
+        await coordinator.init();
         await ensureConnected(client);
         const raw = await client.get(keys.kv(key));
         if (!raw) return undefined;
@@ -66,7 +57,7 @@ function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache 
     },
 
     async set<T>(key: string, value: T, opts: CacheOptions = {}): Promise<void> {
-      await ensureInit();
+      await coordinator.init();
       await ensureConnected(client);
       const env: KvEnvelope<T> = {
         v: value,
@@ -114,12 +105,8 @@ function wrapRuntime(runtime: Runtime, ownsRuntime: boolean): ProgrammaticCache 
       return promise;
     },
 
-    async invalidateTag(tag: string | string[], durations?: { expire?: number }): Promise<void> {
-      const tags = Array.isArray(tag) ? tag : [tag];
-      if (tags.length === 0) return;
-      // Writing needs no manifest; init only starts this instance listening for invalidations.
-      ensureInit().catch((err) => debug?.("cache.invalidateTag: init failed", err));
-      await coordinator.updateTags(tags, durations);
+    async invalidateTag(tag: string | string[], durations?: TagDurations): Promise<void> {
+      await coordinator.updateTags(Array.isArray(tag) ? tag : [tag], durations);
     },
 
     async close(): Promise<void> {

@@ -1,11 +1,11 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Redis } from "ioredis";
 import { buildRemoteHandler } from "../../src/handlers/remote.js";
 import { createClient } from "../../src/redis/client.js";
 import { createKeyBuilder } from "../../src/redis/keys.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import { TagCoordinator } from "../../src/tags/coordinator.js";
-import { Relay, until } from "../helpers/relay.js";
+import { Relay } from "../helpers/relay.js";
 import { startRedis, type RealRedis } from "../helpers/redis-real.js";
 import { toReadableStream } from "../helpers/streams.js";
 
@@ -49,14 +49,17 @@ describe("silently dead connections (integration)", () => {
 
       relay.stall();
       await peer.updateTags(["missed"]);
-      await until(() => {
-        pod.refreshTags().catch(() => {});
-        return pod.manifest.get("missed") !== undefined;
-      }, 5_000);
+      await vi.waitFor(
+        async () => {
+          await pod.refreshTags().catch(() => {});
+          expect(pod.manifest.get("missed")).toBeDefined();
+        },
+        { timeout: 5_000, interval: 50 },
+      );
 
       // Pub/sub delivers again once the subscriber is replaced.
       await peer.updateTags(["live"]);
-      await until(() => pod.manifest.get("live") !== undefined, 5_000);
+      await vi.waitFor(() => expect(pod.manifest.get("live")).toBeDefined(), { timeout: 5_000 });
     } finally {
       await Promise.all([pod.close(), peer.close()]);
       for (const client of clients) client.disconnect();
@@ -83,13 +86,10 @@ describe("silently dead connections (integration)", () => {
       relay.stall();
       expect(await handler.get("k", [])).toBeUndefined();
 
-      const deadline = Date.now() + 10_000;
-      let hit = false;
-      while (!hit && Date.now() < deadline) {
-        hit = (await handler.get("k", [])) !== undefined;
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(hit).toBe(true);
+      await vi.waitFor(async () => expect(await handler.get("k", [])).toBeDefined(), {
+        timeout: 10_000,
+        interval: 50,
+      });
     } finally {
       await runtime.close().catch(() => {});
     }

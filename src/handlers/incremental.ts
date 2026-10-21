@@ -3,8 +3,7 @@ import { createRequire } from "node:module";
 import { isBuildPhase } from "../config.js";
 import { getDefaultRuntime, type Runtime } from "../runtime.js";
 import type { TagManifestListener } from "../tags/manifest.js";
-import type { NextCacheOptions } from "../types.js";
-import { warnInvalidationFailed } from "./shared.js";
+import type { NextCacheOptions, TagDurations } from "../types.js";
 
 // The incremental (ISR) cache is Next's *singular* `cacheHandler` — a separate
 // system from the `cacheHandlers` (plural) that back `'use cache'`. It stores
@@ -21,11 +20,8 @@ import { warnInvalidationFailed } from "./shared.js";
 // the default/remote handlers maintain. A tag invalidation received by any
 // instance therefore invalidates the saved pages on all of them.
 //
-// Staleness is the exception: Next itself decides whether to serve a saved page
-// stale-while-revalidate by checking its in-process tag map, which FileSystemCache
-// only updates on the instance that ran `revalidateTag()`. Every tag update the
-// shared manifest takes is therefore mirrored into that map too, so a soft
-// invalidation (`revalidateTag(tag, profile)`) reaches every instance.
+// Next decides stale-while-revalidate from its in-process tagsManifest, which only the
+// revalidating instance updates, so every shared-manifest update is mirrored into it.
 
 /** Response-header key Next uses to persist a page entry's cache tags. */
 const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
@@ -52,7 +48,7 @@ export interface IncrementalCacheHandler {
     cacheKey: string,
     ctx: IncrementalGetContext,
   ): Promise<IncrementalCacheEntry | null | undefined>;
-  revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
+  revalidateTag(tags: string | string[], durations?: TagDurations): Promise<void>;
 }
 
 /**
@@ -110,12 +106,6 @@ export function buildIncrementalHandler(
   const { coordinator, debug } = runtime;
   mirrorTagsIntoNext(runtime);
 
-  // coordinator.init() dedupes and retries; memoizing here would pin a boot-time failure.
-  const sharedManifest = async (): Promise<typeof coordinator.manifest> => {
-    await coordinator.init();
-    return coordinator.manifest;
-  };
-
   return class CoordinatedIncrementalCache extends Base {
     override async get(
       cacheKey: string,
@@ -128,8 +118,8 @@ export function buildIncrementalHandler(
       if (tags.length === 0) return entry;
 
       try {
-        const manifest = await sharedManifest();
-        if (manifest.areTagsExpired(tags, entry.lastModified)) {
+        await coordinator.init();
+        if (coordinator.manifest.areTagsExpired(tags, entry.lastModified)) {
           debug?.("incremental", "tag-expired", cacheKey, tags);
           return null;
         }
@@ -141,23 +131,16 @@ export function buildIncrementalHandler(
       return entry;
     }
 
-    override async revalidateTag(
-      tags: string | string[],
-      durations?: { expire?: number },
-    ): Promise<void> {
+    override async revalidateTag(tags: string | string[], durations?: TagDurations): Promise<void> {
       await super.revalidateTag(tags, durations);
 
       // Publish to the shared manifest as well, so the handler works even
       // when the default/remote handlers aren't registered. When they are,
       // Next calls their updateTags for the same invalidation and the
       // coordinator joins the calls into one write.
+      // The coordinator warns about a failed shared write; Next must not see it.
       const tagList = typeof tags === "string" ? [tags] : tags;
-      if (tagList.length === 0) return;
-      try {
-        await coordinator.updateTags(tagList, durations);
-      } catch (err) {
-        warnInvalidationFailed(runtime, "incremental", tagList, err);
-      }
+      await coordinator.updateTags(tagList, durations).catch(() => {});
     }
   };
 }

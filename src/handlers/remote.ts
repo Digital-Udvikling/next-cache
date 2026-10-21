@@ -44,7 +44,11 @@ export function createRedisStorage(runtime: Runtime): Storage {
 export function buildRemoteHandler(runtime: Runtime): CacheHandler {
   // "expire": Redis-backed entries are served stale past `revalidate` so the
   // 'use cache' wrapper can refresh them in the background instead of blocking.
-  return buildHandler(runtime, createRedisStorage(runtime), "remote", "expire");
+  return buildHandler(runtime, createRedisStorage(runtime), {
+    label: "remote",
+    dropAfter: "expire",
+    readsAwaitManifest: true,
+  });
 }
 
 export function createRemoteHandler(options: NextCacheOptions = {}): CacheHandler {

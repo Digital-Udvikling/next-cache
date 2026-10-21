@@ -16,18 +16,22 @@ export interface Runtime {
   close(): Promise<void>;
 }
 
+const LOG_PREFIX = "[@aortl/next-cache]";
+
 export function createRuntime(options: NextCacheOptions = {}): Runtime {
   const config = resolveConfig(options);
   const debug = config.debug
-    ? (...args: unknown[]) => console.debug("[@aortl/next-cache]", ...args)
+    ? (...args: unknown[]) => console.debug(LOG_PREFIX, ...args)
     : undefined;
-  const client = createClient(config.redis, connectionErrorReporter(debug));
+  const warn = (...args: unknown[]): void => console.warn(LOG_PREFIX, ...args);
+  const client = createClient(config.redis, connectionErrorReporter(warn, debug));
   const keys = createKeyBuilder(config.keyPrefix, config.pubsubChannel);
   const coordinator = new TagCoordinator({
     client,
     keys,
     pubsubEnabled: config.pubsubEnabled,
     debug,
+    warn,
   });
 
   return {
@@ -36,7 +40,7 @@ export function createRuntime(options: NextCacheOptions = {}): Runtime {
     keys,
     coordinator,
     debug,
-    warn: (...args: unknown[]) => console.warn("[@aortl/next-cache]", ...args),
+    warn,
     async close() {
       await coordinator.close();
       try {
@@ -51,16 +55,17 @@ export function createRuntime(options: NextCacheOptions = {}): Runtime {
 const ERROR_WARN_INTERVAL_MS = 60_000;
 
 // Operators must see connection errors without debug on, but ioredis emits one per retry.
-function connectionErrorReporter(debug?: (...args: unknown[]) => void): (err: Error) => void {
+function connectionErrorReporter(
+  warn: (...args: unknown[]) => void,
+  debug?: (...args: unknown[]) => void,
+): (err: Error) => void {
   let lastWarnedAt = 0;
   return (err) => {
     debug?.("redis error", err);
     const now = Date.now();
     if (now - lastWarnedAt < ERROR_WARN_INTERVAL_MS) return;
     lastWarnedAt = now;
-    console.warn(
-      `[@aortl/next-cache] redis error: ${err.message} (cache degraded until reconnected)`,
-    );
+    warn(`redis error: ${err.message} (cache degraded until reconnected)`);
   };
 }
 

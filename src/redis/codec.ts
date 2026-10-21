@@ -24,13 +24,18 @@ export async function readStream(stream: ReadableStream<Uint8Array>): Promise<Bu
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  return Buffer.concat(chunks);
 }
 
+/** Stream a copy of `buf`, so readers can't alter the stored original. */
 export function bufferToStream(buf: Buffer): ReadableStream<Uint8Array> {
+  return streamOf(new Uint8Array(buf));
+}
+
+function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new Uint8Array(buf));
+      controller.enqueue(bytes);
       controller.close();
     },
   });
@@ -68,7 +73,8 @@ export function decodeEntry(raw: Buffer): CacheEntry | undefined {
   }
   if (!isEntryHeader(header)) return undefined;
   return {
-    value: bufferToStream(raw.subarray(headerEnd)),
+    // The reply buffer belongs to this read alone, so stream it without copying.
+    value: streamOf(raw.subarray(headerEnd)),
     tags: header.t,
     stale: header.s,
     timestamp: header.ts,
