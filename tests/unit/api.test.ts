@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { attachCache } from "../../src/cache/api.js";
+import { buildDefaultHandler } from "../../src/handlers/default.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import type { ProgrammaticCache } from "../../src/types.js";
 import { createMockRedis, flushAll } from "../helpers/redis-mock.js";
+import { toReadableStream } from "../helpers/streams.js";
 
 describe("programmatic cache", () => {
   let runtime: Runtime;
@@ -67,6 +69,27 @@ describe("programmatic cache", () => {
     await new Promise((r) => setTimeout(r, 5));
     await cache.invalidateTag("foo");
     expect(await cache.get("k")).toBeUndefined();
+  });
+
+  it("invalidateTag with an expire marks 'use cache' entries stale instead of dropping them", async () => {
+    const handler = buildDefaultHandler(runtime);
+    await handler.set(
+      "page",
+      Promise.resolve({
+        value: toReadableStream("v"),
+        tags: ["foo"],
+        stale: 30,
+        timestamp: Date.now() - 1_000,
+        expire: 3600,
+        revalidate: 900,
+      }),
+    );
+
+    await cache.invalidateTag("foo", { expire: 3600 });
+
+    const got = await handler.get("page", []);
+    expect(got).toBeDefined();
+    expect(got?.revalidate).toBe(-1);
   });
 
   it("invalidateTag accepts an array", async () => {

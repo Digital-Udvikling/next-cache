@@ -28,3 +28,22 @@ export function createUnreachableRedis(): Redis {
   };
   return client as unknown as Redis;
 }
+
+/** A caller-supplied client whose connection attempt never settles, as with a blackholed Redis. */
+export function createHangingRedis(): Redis {
+  const client = {
+    status: "wait",
+    connect: () => {
+      client.status = "connecting";
+      return new Promise<never>(() => {});
+    },
+    pipeline: () => ({ hset: () => {}, publish: () => {}, exec: refuse }),
+    duplicate: () => client,
+    on: () => client,
+    once: () => client,
+    off: () => client,
+    quit: async () => "OK",
+    disconnect: () => {},
+  };
+  return client as unknown as Redis;
+}

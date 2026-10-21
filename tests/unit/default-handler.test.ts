@@ -3,7 +3,7 @@ import type { CacheEntry, CacheHandler } from "../../src/types.js";
 import { buildDefaultHandler } from "../../src/handlers/default.js";
 import { createRuntime, type Runtime } from "../../src/runtime.js";
 import { createMockRedis, flushAll } from "../helpers/redis-mock.js";
-import { createUnreachableRedis } from "../helpers/redis-unreachable.js";
+import { createHangingRedis, createUnreachableRedis } from "../helpers/redis-unreachable.js";
 import { collectStream, toReadableStream } from "../helpers/streams.js";
 
 function entry(overrides: Partial<CacheEntry> = {}): CacheEntry {
@@ -155,5 +155,23 @@ describe("default handler while Redis is unreachable", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await handler.updateTags(["foo"]);
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("default handler while Redis hangs", () => {
+  it("serves in-memory entries without waiting for Redis", async () => {
+    const runtime = createRuntime({ redis: createHangingRedis() });
+    const handler = buildDefaultHandler(runtime);
+    try {
+      await handler.set("k", Promise.resolve(entry({ value: toReadableStream("cached") })));
+      const got = await Promise.race([
+        handler.get("k", []),
+        new Promise((r) => setTimeout(() => r("still waiting"), 500)),
+      ]);
+      expect(got).not.toBe("still waiting");
+      expect(got).toBeDefined();
+    } finally {
+      await runtime.close();
+    }
   });
 });
