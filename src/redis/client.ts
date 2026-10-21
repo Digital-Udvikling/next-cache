@@ -17,6 +17,9 @@ const OWN_CLIENT_OPTIONS: RedisOptions = {
   connectTimeout: 1000,
   commandTimeout: 500,
   maxRetriesPerRequest: 1,
+  // commandTimeout fails a command but keeps the socket; a peer that stopped answering is only
+  // replaced once no reply arrives for this long (TCP keepalive would take hours).
+  socketTimeout: 5000,
 };
 
 /**
@@ -33,8 +36,12 @@ export function createClient(input: RedisInput, onError?: (err: Error) => void):
   return client;
 }
 
-export function duplicateForPubsub(client: Redis): Redis {
-  return client.duplicate({ lazyConnect: true });
+/**
+ * Subscriber connection for `client`. It is dropped and reconnected when a command (e.g. a
+ * heartbeat ping) gets no reply within `socketTimeout` ms.
+ */
+export function duplicateForPubsub(client: Redis, socketTimeout: number): Redis {
+  return client.duplicate({ lazyConnect: true, socketTimeout });
 }
 
 function isRedisInstance(input: RedisInput): input is Redis {

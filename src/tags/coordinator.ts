@@ -12,11 +12,14 @@ interface PubsubMessage {
 // Bounds the full re-read that stands in for pub/sub while the subscriber is down.
 const DEGRADED_SYNC_INTERVAL_MS = 5_000;
 const SCAN_BATCH_SIZE = 1_000;
+const SUBSCRIBER_HEARTBEAT_MS = 5_000;
 
 export interface CoordinatorOptions {
   client: Redis;
   keys: KeyBuilder;
   pubsubEnabled: boolean;
+  /** Ping interval for the subscriber; a ping unanswered for as long replaces the connection. */
+  subscriberHeartbeatMs?: number;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -30,8 +33,12 @@ export class TagCoordinator {
   private readonly client: Redis;
   private readonly keys: KeyBuilder;
   private readonly pubsubEnabled: boolean;
+  private readonly subscriberHeartbeatMs: number;
   private readonly debug?: (...args: unknown[]) => void;
   private subscriber: Redis | undefined;
+  private heartbeat: ReturnType<typeof setInterval> | undefined;
+  // Set while a reconnected subscriber's re-read has yet to succeed: pub/sub alone can't catch up.
+  private resyncPending = false;
   private initialized = false;
   private initPromise: Promise<void> | undefined;
   private closed = false;
@@ -43,6 +50,7 @@ export class TagCoordinator {
     this.client = opts.client;
     this.keys = opts.keys;
     this.pubsubEnabled = opts.pubsubEnabled;
+    this.subscriberHeartbeatMs = opts.subscriberHeartbeatMs ?? SUBSCRIBER_HEARTBEAT_MS;
     this.debug = opts.debug;
   }
 
@@ -75,16 +83,30 @@ export class TagCoordinator {
   private async startSubscriber(): Promise<void> {
     // Reused across init retries; ioredis re-subscribes after a reconnect and "ready" re-reads.
     if (!this.subscriber) {
-      this.subscriber = duplicateForPubsub(this.client);
-      this.subscriber.on("message", (_channel, raw) => {
+      const subscriber = duplicateForPubsub(this.client, this.subscriberHeartbeatMs);
+      this.subscriber = subscriber;
+      subscriber.on("message", (_channel, raw) => {
         this.handleMessage(raw);
       });
-      this.subscriber.on("ready", () => {
-        this.fullSync().catch((err) => this.debug?.("re-sync failed", err));
+      subscriber.on("ready", () => {
+        this.resyncPending = true;
+        this.fullSync().then(
+          () => {
+            this.resyncPending = false;
+          },
+          (err) => this.debug?.("re-sync failed", err),
+        );
       });
-      this.subscriber.on("error", (err) => {
+      subscriber.on("error", (err) => {
         this.debug?.("subscriber error", err);
       });
+      // A blackholed subscriber stays "ready" and silently misses messages; the ping's socket
+      // timeout turns that into a reconnect, which re-subscribes and re-reads.
+      this.heartbeat = setInterval(() => {
+        if (subscriber.status !== "ready") return;
+        subscriber.ping().catch((err) => this.debug?.("subscriber ping failed", err));
+      }, this.subscriberHeartbeatMs);
+      this.heartbeat.unref();
     }
     await ensureConnected(this.subscriber);
     await this.subscriber.subscribe(this.keys.pubsubChannel);
@@ -112,15 +134,20 @@ export class TagCoordinator {
       await this.fullSync();
       return;
     }
-    if (this.subscriber?.status === "ready") return;
+    if (this.subscriber?.status === "ready" && !this.resyncPending) return;
     await this.degradedSync();
   }
 
   private degradedSync(): Promise<void> {
     if (this.degradedSyncInFlight) return this.degradedSyncInFlight;
     if (Date.now() - this.lastDegradedSyncAt < DEGRADED_SYNC_INTERVAL_MS) return Promise.resolve();
-    this.lastDegradedSyncAt = Date.now();
-    this.degradedSyncInFlight = this.fullSync().finally(() => {
+    this.degradedSyncInFlight = (async () => {
+      await ensureConnected(this.client);
+      // Only a re-read that reaches Redis spends the interval; failing fast costs Redis nothing.
+      this.lastDegradedSyncAt = Date.now();
+      await this.fullSync();
+      this.resyncPending = false;
+    })().finally(() => {
       this.degradedSyncInFlight = undefined;
     });
     return this.degradedSyncInFlight;
@@ -208,6 +235,7 @@ export class TagCoordinator {
 
   async close(): Promise<void> {
     this.closed = true;
+    clearInterval(this.heartbeat);
     if (this.subscriber) {
       try {
         await this.subscriber.quit();
