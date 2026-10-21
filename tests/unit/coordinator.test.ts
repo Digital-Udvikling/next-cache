@@ -62,6 +62,7 @@ class ScriptedClient extends FlakyClient {
   published: string[] = [];
   private held: ((reply: [string, string[]]) => void) | undefined;
   private holdNext = false;
+  private failNext = false;
 
   constructor() {
     super(0);
@@ -73,8 +74,17 @@ class ScriptedClient extends FlakyClient {
     return (hash) => this.held?.(["0", Object.entries(hash).flat()]);
   }
 
+  /** The next full read rejects, as if it timed out on a connection that died again. */
+  failNextSync(): void {
+    this.failNext = true;
+  }
+
   override async hscan(_key?: string, cursor?: string): Promise<[string, string[]]> {
     if (cursor === "0") this.fullReads += 1;
+    if (this.failNext) {
+      this.failNext = false;
+      throw new Error("Command timed out");
+    }
     if (!this.holdNext) return ["0", []];
     this.holdNext = false;
     return new Promise((resolve) => {
@@ -259,6 +269,24 @@ describe("TagCoordinator.refreshTags", () => {
     before = client.fullReads;
     await burstOfRefreshes(coordinator);
     expect(client.fullReads - before).toBe(1);
+  });
+
+  it("retries a failed re-read after the subscriber reconnects, though it reports ready", async () => {
+    const client = new ScriptedClient();
+    const coordinator = new TagCoordinator({ client: asRedis(client), keys, pubsubEnabled: true });
+    await coordinator.init();
+    const subscriber = client.duplicates[0]!;
+
+    client.failNextSync();
+    subscriber.dropConnection();
+    subscriber.backgroundReconnect();
+    await vi.waitFor(() => expect(client.fullReads).toBe(2));
+
+    await coordinator.refreshTags();
+    expect(client.fullReads).toBe(3);
+    // Once a re-read succeeds, a ready subscriber needs none.
+    await coordinator.refreshTags();
+    expect(client.fullReads).toBe(3);
   });
 
   it("re-reads the manifest on every call when pub/sub is disabled", async () => {

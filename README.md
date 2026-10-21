@@ -154,7 +154,7 @@ createDefaultHandler({
 
 ### Timeouts
 
-A cache lookup should never be slower than a miss, so clients built from a URL or `RedisOptions` default to `connectTimeout: 1000`, `commandTimeout: 500` and `maxRetriesPerRequest: 1`, with the offline queue disabled. A command that times out counts as a miss. Pass your own values in `RedisOptions` to override them; a pre-built `Redis` instance is used as is.
+A cache lookup should never be slower than a miss, so clients built from a URL or `RedisOptions` default to `connectTimeout: 1000`, `commandTimeout: 500` and `maxRetriesPerRequest: 1`, with the offline queue disabled. A command that times out counts as a miss. A connection that stops answering without closing (a blackholed peer) is replaced once a command gets no reply for `socketTimeout: 5000`; the pub/sub subscriber is pinged every 5 seconds so it is replaced the same way, and re-reads the tag manifest when it reconnects. Pass your own values in `RedisOptions` to override them; a pre-built `Redis` instance is used as is, so give it a `commandTimeout` and `socketTimeout` yourself.
 
 ### Sharing a runtime
 
